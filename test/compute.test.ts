@@ -27,6 +27,8 @@ interface MockApiOptions {
   pencePerKwh?: number;
   /** Historical consumption intervals returned by the REST consumption endpoint (for backfill). */
   consumption?: { consumptionKwh: number; intervalStart: string; intervalEnd: string }[];
+  /** Simulates the consumption endpoint failing (e.g. wrong MPAN/serial, no data yet). */
+  consumptionFails?: boolean;
 }
 
 function mockOctopusApi(opts: MockApiOptions) {
@@ -69,6 +71,9 @@ function mockOctopusApi(opts: MockApiOptions) {
     }
 
     if (url.includes("/consumption/")) {
+      if (opts.consumptionFails) {
+        return new Response("not found", { status: 404 });
+      }
       const results = (opts.consumption ?? []).map((c) => ({
         consumption: c.consumptionKwh,
         interval_start: c.intervalStart,
@@ -383,6 +388,32 @@ describe("computeStatus month backfill", () => {
     // 5 kWh backfilled from the 14th + 1 kWh live from today, all at 10p/kWh.
     expect(status.thisMonthTotalKwh).toBeCloseTo(6);
     expect(status.thisMonthTotalCostGbp).toBeCloseTo(0.6);
+    expect(monthAccumulator.periodKey).toBe("2025-12-20");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("degrades to a zero-balance month total instead of failing the whole request when backfill fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:00:00Z", demand: 500, consumptionDelta: 1000 }],
+        pencePerKwh: 10,
+        consumptionFails: true,
+      }),
+    );
+
+    const { status, monthAccumulator } = await computeStatus(
+      testEnv,
+      null,
+      null,
+      new Date("2026-01-15T10:01:00Z"),
+    );
+
+    // Backfill failed, so the month total falls back to just today's live
+    // consumption rather than throwing.
+    expect(status.thisMonthTotalKwh).toBeCloseTo(1);
+    expect(status.thisMonthTotalCostGbp).toBeCloseTo(0.1);
     expect(monthAccumulator.periodKey).toBe("2025-12-20");
 
     vi.unstubAllGlobals();

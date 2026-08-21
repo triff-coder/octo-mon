@@ -23,8 +23,14 @@ export default {
       if (!isAuthorized(request, env)) {
         return jsonResponse({ error: "unauthorized" }, 401);
       }
-      const status = await getOrComputeStatus(env);
-      return jsonResponse(status, 200);
+      try {
+        const status = await getOrComputeStatus(env);
+        return jsonResponse(status, 200);
+      } catch (error) {
+        console.error("octo-mon /status failed:", error);
+        const message = error instanceof Error ? error.message : String(error);
+        return jsonResponse({ error: "internal_error", message }, 500);
+      }
     }
 
     return jsonResponse({ error: "not found" }, 404);

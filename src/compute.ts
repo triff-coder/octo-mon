@@ -160,6 +160,12 @@ async function backfillMonthAccumulator(env: Env, now: Date): Promise<MonthAccum
  * it's still within the current billing period, otherwise a fresh one
  * seeded via backfillMonthAccumulator so a period rollover (or first run)
  * doesn't silently drop already-elapsed days in the period.
+ *
+ * Backfilling is a best-effort enhancement, not a hard dependency of
+ * /status: if the consumption endpoint fails (wrong MPAN/serial, no data
+ * yet for a brand-new meter, Octopus outage, ...) this falls back to a
+ * zero-balance accumulator starting today, rather than letting the whole
+ * request fail.
  */
 async function resolveMonthAccumulator(
   env: Env,
@@ -172,7 +178,17 @@ async function resolveMonthAccumulator(
   ) {
     return previousMonthAccumulator;
   }
-  return backfillMonthAccumulator(env, now);
+  try {
+    return await backfillMonthAccumulator(env, now);
+  } catch (error) {
+    console.error("octo-mon month backfill failed, starting this month's total from zero:", error);
+    return {
+      periodKey: billingPeriodKey(now),
+      kwhSoFar: 0,
+      costGbpSoFar: 0,
+      lastReadingAt: londonMidnightUtc(londonDateKey(now)).toISOString(),
+    };
+  }
 }
 
 export interface ComputedStatus {

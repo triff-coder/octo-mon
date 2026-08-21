@@ -1,5 +1,5 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import type { Env, StatusResponse } from "../src/types";
 
@@ -18,6 +18,16 @@ beforeEach(async () => {
   await Promise.all(list.keys.map((k) => kv.delete(k.name)));
 
   testEnv.WIDGET_SHARED_SECRET = "test-secret";
+  testEnv.OCTOPUS_API_KEY = "sk_test_123";
+  testEnv.OCTOPUS_DEVICE_ID = "00-00-00-00-00-00-00-00";
+  testEnv.OCTOPUS_PRODUCT_CODE = "AGILE-24-10-01";
+  testEnv.OCTOPUS_TARIFF_CODE = "E-1R-AGILE-24-10-01-C";
+  testEnv.OCTOPUS_MPAN = "1234567890123";
+  testEnv.OCTOPUS_METER_SERIAL = "12A3456789";
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 const cachedStatus: StatusResponse = {
@@ -64,6 +74,24 @@ describe("GET /status", () => {
 
     const response = await callFetch(new Request("https://example.com/status?token=test-secret"));
     expect(response.status).toBe(200);
+  });
+
+  it("returns a clean 500 JSON error instead of an unhandled exception when live computation fails", async () => {
+    // No cached snapshot, so /status must compute live; simulate Octopus's
+    // API being unreachable/erroring for the very first call it makes.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("bad gateway", { status: 502 })),
+    );
+
+    const response = await callFetch(
+      new Request("https://example.com/status", { headers: { "X-Widget-Secret": "test-secret" } }),
+    );
+
+    expect(response.status).toBe(500);
+    const body = (await response.json()) as { error: string; message: string };
+    expect(body.error).toBe("internal_error");
+    expect(body.message).toBeTruthy();
   });
 });
 

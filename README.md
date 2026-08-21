@@ -147,20 +147,32 @@ npm test
 
 1. Install [Scriptable](https://apps.apple.com/app/scriptable/id1405459188) from
    the App Store if you don't have it.
-2. Create a new script in Scriptable and paste in the contents of
-   [`scriptable/OctoMon.js`](./scriptable/OctoMon.js).
-3. Edit the top of the script:
-   - `WORKER_URL` → your `https://octo-mon.<your-subdomain>.workers.dev/status` URL
-   - `SHARED_SECRET` → the `WIDGET_SHARED_SECRET` value you set above
-4. Run the script once in-app to confirm it renders (small/medium preview).
-5. Long-press your home screen → **+** → search **Scriptable** → add a widget,
-   choose the small or medium size, then edit the widget and select this
-   script.
+2. Create a new script named **OctoMon** in Scriptable and paste in the
+   contents of [`scriptable/OctoMon.js`](./scriptable/OctoMon.js). This is
+   the only time you'll paste it in — see "Staying up to date" below.
+3. Run the script once by tapping it in the app (not as a widget yet). It'll
+   prompt for your Worker URL (`https://octo-mon.<your-subdomain>.workers.dev/status`)
+   and your `WIDGET_SHARED_SECRET`, then store them in the iOS Keychain —
+   not in the script file itself.
+4. Long-press your home screen → **+** → search **Scriptable** → add a widget,
+   choose the small or medium size, then edit the widget and select the
+   OctoMon script.
 
-The widget shows current £/hr (colour-coded by rate band) and today's running
-total. If the Worker is briefly unreachable, it falls back to the last
-successfully fetched data and shows a "STALE" badge with the time it's stale
-since, rather than going blank.
+The widget shows current £/hr (colour-coded by rate band), today's running
+total, and (medium size only) this month's running total. If the Worker is
+briefly unreachable, it falls back to the last successfully fetched data and
+shows a "STALE" badge with the time it's stale since, rather than going blank.
+
+### Staying up to date
+
+The script checks `scriptable/OctoMon.js` on the repo's `main` branch each
+time it runs and silently updates its own copy if it's changed (the update
+takes effect on the *next* refresh, not immediately). Your Worker URL and
+secret live in Keychain, not in the script text, so an update never
+overwrites them. To edit those values later, just open and run OctoMon in
+the app again — it'll show the same setup prompt, pre-filled, for you to
+change and re-save. Set `AUTO_UPDATE_ENABLED = false` at the top of the
+script if you'd rather pin it to whatever version is currently installed.
 
 ## Development
 

@@ -85,3 +85,36 @@ export function nextLondonMidnightUtc(instant: Date): Date {
   const tomorrowKey = addDaysToDateKey(londonDateKey(instant), 1);
   return londonMidnightUtc(tomorrowKey);
 }
+
+/**
+ * The Europe/London date key (YYYY-MM-DD) for the start of the Octopus
+ * billing period containing `instant`. Billing months run from
+ * `billingDay` of one calendar month to `billingDay - 1` of the next.
+ */
+export function billingPeriodKey(instant: Date, billingDay = 20): string {
+  const [y, m, d] = londonDateKey(instant).split("-").map(Number) as [number, number, number];
+  if (d >= billingDay) {
+    return `${y}-${String(m).padStart(2, "0")}-${String(billingDay).padStart(2, "0")}`;
+  }
+  const prevMonth = m === 1 ? 12 : m - 1;
+  const prevYear = m === 1 ? y - 1 : y;
+  return `${prevYear}-${String(prevMonth).padStart(2, "0")}-${String(billingDay).padStart(2, "0")}`;
+}
+
+/** Whether two instants fall in the same Octopus billing period (see billingPeriodKey). */
+export function isSameBillingPeriod(a: Date, b: Date, billingDay = 20): boolean {
+  return billingPeriodKey(a, billingDay) === billingPeriodKey(b, billingDay);
+}
+
+/**
+ * The UTC instant at which the billing period containing `instant` ends
+ * (i.e. the start, in Europe/London local time, of the following billing
+ * period). Used to size KV expiry for the monthly accumulator.
+ */
+export function nextBillingPeriodStartUtc(instant: Date, billingDay = 20): Date {
+  const [y, m] = billingPeriodKey(instant, billingDay).split("-").map(Number) as [number, number, number];
+  const nextMonth = m === 12 ? 1 : m + 1;
+  const nextYear = m === 12 ? y + 1 : y;
+  const nextPeriodKey = `${nextYear}-${String(nextMonth).padStart(2, "0")}-${String(billingDay).padStart(2, "0")}`;
+  return londonMidnightUtc(nextPeriodKey);
+}

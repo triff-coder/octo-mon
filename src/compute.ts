@@ -1,17 +1,21 @@
 import { getJson, putJson } from "./cache";
 import { fetchAgileRatesForDay, fetchTelemetry, obtainKrakenJwt } from "./octopus";
 import {
+  billingPeriodKey,
+  isSameBillingPeriod,
   isSameLondonDay,
   londonDateKey,
   londonMidnightUtc,
+  nextBillingPeriodStartUtc,
   nextLondonMidnightUtc,
   secondsBetween,
 } from "./time";
-import type { AgileRate, Env, StatusResponse, TodayAccumulator } from "./types";
+import type { AgileRate, Env, MonthAccumulator, StatusResponse, TodayAccumulator } from "./types";
 
 const STATUS_SNAPSHOT_KV_KEY = "status:latest";
 const STATUS_SNAPSHOT_TTL_SECONDS = 30 * 60;
 const TODAY_ACCUMULATOR_KV_KEY = "today:accumulator";
+const MONTH_ACCUMULATOR_KV_KEY = "month:accumulator";
 // A cached snapshot older than this (roughly 3 missed 5-minute cron ticks)
 // is flagged stale rather than presented as current.
 const STALE_THRESHOLD_SECONDS = 15 * 60;
@@ -66,19 +70,63 @@ export function advanceTodayAccumulator(
   return acc;
 }
 
+/**
+ * Same accumulation logic as advanceTodayAccumulator, but keyed to the
+ * Octopus billing period (resets on the 20th of each month) rather than the
+ * local calendar day.
+ */
+export function advanceMonthAccumulator(
+  accumulator: MonthAccumulator | null,
+  points: { readAt: string; consumptionDeltaKwh: number }[],
+  ratesByDay: Map<string, AgileRate[]>,
+  now: Date,
+): MonthAccumulator {
+  const periodKey = billingPeriodKey(now);
+
+  const acc: MonthAccumulator =
+    accumulator && isSameBillingPeriod(new Date(accumulator.lastReadingAt), now)
+      ? { ...accumulator }
+      : { periodKey, kwhSoFar: 0, costGbpSoFar: 0, lastReadingAt: new Date(0).toISOString() };
+
+  const lastAppliedMs = new Date(acc.lastReadingAt).getTime();
+
+  for (const point of points) {
+    const pointMs = new Date(point.readAt).getTime();
+    if (pointMs <= lastAppliedMs) continue;
+
+    const pointDate = new Date(point.readAt);
+    const dayKey = londonDateKey(pointDate);
+    const rates = ratesByDay.get(dayKey) ?? [];
+    const rate = findRateForInstant(rates, pointDate);
+
+    if (rate) {
+      acc.kwhSoFar += point.consumptionDeltaKwh;
+      acc.costGbpSoFar += (point.consumptionDeltaKwh * rate.pencePerKwh) / 100;
+    }
+    acc.lastReadingAt = point.readAt;
+  }
+
+  return acc;
+}
+
 export interface ComputedStatus {
   status: StatusResponse;
   accumulator: TodayAccumulator;
+  monthAccumulator: MonthAccumulator;
 }
 
 /**
  * Orchestrates a full refresh: obtains a Kraken JWT, fetches telemetry since
- * the last known reading, advances the today accumulator, and looks up the
- * current rate/demand for the response payload.
+ * the last known reading, advances the today and this-month accumulators
+ * (from the same telemetry fetch — the month accumulator only ever resets
+ * on the 20th, which is always also a local-day boundary, so the daily
+ * fetch window is always sufficient for it too), and looks up the current
+ * rate/demand for the response payload.
  */
 export async function computeStatus(
   env: Env,
   previousAccumulator: TodayAccumulator | null,
+  previousMonthAccumulator: MonthAccumulator | null,
   now: Date = new Date(),
 ): Promise<ComputedStatus> {
   const jwt = await obtainKrakenJwt(env, now);
@@ -97,6 +145,7 @@ export async function computeStatus(
 
   const points = await fetchTelemetry(env, jwt, fetchSince, now);
   const accumulator = advanceTodayAccumulator(previousAccumulator, points, ratesByDay, now);
+  const monthAccumulator = advanceMonthAccumulator(previousMonthAccumulator, points, ratesByDay, now);
 
   const latestPoint = points.at(-1);
   const currentDemandKw = latestPoint?.demandKw ?? 0;
@@ -113,14 +162,17 @@ export async function computeStatus(
     currentCostPerHourGbp,
     todayTotalKwh: accumulator.kwhSoFar,
     todayTotalCostGbp: accumulator.costGbpSoFar,
+    thisMonthTotalKwh: monthAccumulator.kwhSoFar,
+    thisMonthTotalCostGbp: monthAccumulator.costGbpSoFar,
+    billingPeriodStart: monthAccumulator.periodKey,
     stale: false,
     snapshotAgeSeconds: 0,
   };
 
-  return { status, accumulator };
+  return { status, accumulator, monthAccumulator };
 }
 
-/** Writes a freshly computed status + accumulator to KV. */
+/** Writes a freshly computed status + accumulators to KV. */
 export async function persistComputedStatus(env: Env, computed: ComputedStatus, now: Date): Promise<void> {
   await putJson(env.OCTOMON_KV, STATUS_SNAPSHOT_KV_KEY, computed.status, {
     expirationTtl: STATUS_SNAPSHOT_TTL_SECONDS,
@@ -128,10 +180,17 @@ export async function persistComputedStatus(env: Env, computed: ComputedStatus, 
   await putJson(env.OCTOMON_KV, TODAY_ACCUMULATOR_KV_KEY, computed.accumulator, {
     expirationTtl: Math.max(60, secondsBetween(now, nextLondonMidnightUtc(now)) + 3600),
   });
+  await putJson(env.OCTOMON_KV, MONTH_ACCUMULATOR_KV_KEY, computed.monthAccumulator, {
+    expirationTtl: Math.max(60, secondsBetween(now, nextBillingPeriodStartUtc(now)) + 3600),
+  });
 }
 
 export async function loadTodayAccumulator(env: Env): Promise<TodayAccumulator | null> {
   return getJson<TodayAccumulator>(env.OCTOMON_KV, TODAY_ACCUMULATOR_KV_KEY);
+}
+
+export async function loadMonthAccumulator(env: Env): Promise<MonthAccumulator | null> {
+  return getJson<MonthAccumulator>(env.OCTOMON_KV, MONTH_ACCUMULATOR_KV_KEY);
 }
 
 /**
@@ -151,7 +210,8 @@ export async function getOrComputeStatus(env: Env, now: Date = new Date()): Prom
   }
 
   const previousAccumulator = await loadTodayAccumulator(env);
-  const computed = await computeStatus(env, previousAccumulator, now);
+  const previousMonthAccumulator = await loadMonthAccumulator(env);
+  const computed = await computeStatus(env, previousAccumulator, previousMonthAccumulator, now);
   await persistComputedStatus(env, computed, now);
   return computed.status;
 }

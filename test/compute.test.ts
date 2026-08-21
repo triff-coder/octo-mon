@@ -1,14 +1,16 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  advanceMonthAccumulator,
   advanceTodayAccumulator,
   computeStatus,
   findRateForInstant,
   getOrComputeStatus,
+  loadMonthAccumulator,
   loadTodayAccumulator,
   persistComputedStatus,
 } from "../src/compute";
-import type { AgileRate, Env, StatusResponse, TodayAccumulator } from "../src/types";
+import type { AgileRate, Env, MonthAccumulator, StatusResponse, TodayAccumulator } from "../src/types";
 
 const testEnv = env as unknown as Env;
 
@@ -181,6 +183,62 @@ describe("advanceTodayAccumulator", () => {
   });
 });
 
+describe("advanceMonthAccumulator", () => {
+  const rates: AgileRate[] = [
+    { pencePerKwh: 20, validFrom: "2026-01-15T10:00:00Z", validTo: "2026-01-15T10:30:00Z" },
+  ];
+  const ratesByDay = new Map([["2026-01-15", rates]]);
+  const now = new Date("2026-01-15T10:15:00Z"); // within the 2025-12-20 billing period
+
+  it("accumulates kWh and cost for new points, starting from null", () => {
+    const points = [
+      { readAt: "2026-01-15T10:00:00Z", consumptionDeltaKwh: 1 },
+      { readAt: "2026-01-15T10:10:00Z", consumptionDeltaKwh: 2 },
+    ];
+
+    const acc = advanceMonthAccumulator(null, points, ratesByDay, now);
+
+    expect(acc.kwhSoFar).toBeCloseTo(3);
+    expect(acc.periodKey).toBe("2025-12-20");
+  });
+
+  it("does not double-count points at or before the accumulator's last reading", () => {
+    const existing: MonthAccumulator = {
+      periodKey: "2025-12-20",
+      kwhSoFar: 10,
+      costGbpSoFar: 2,
+      lastReadingAt: "2026-01-15T10:05:00Z",
+    };
+    const points = [
+      { readAt: "2026-01-15T10:00:00Z", consumptionDeltaKwh: 1 }, // before cutoff, skipped
+      { readAt: "2026-01-15T10:10:00Z", consumptionDeltaKwh: 2 }, // new
+    ];
+
+    const acc = advanceMonthAccumulator(existing, points, ratesByDay, now);
+
+    expect(acc.kwhSoFar).toBeCloseTo(12); // 10 (existing) + 2 (new)
+  });
+
+  it("resets when the previous reading was in a different billing period", () => {
+    const lastMonth: MonthAccumulator = {
+      periodKey: "2025-11-20",
+      kwhSoFar: 250,
+      costGbpSoFar: 50,
+      lastReadingAt: "2025-12-19T23:00:00Z",
+    };
+
+    const acc = advanceMonthAccumulator(
+      lastMonth,
+      [{ readAt: "2026-01-15T10:00:00Z", consumptionDeltaKwh: 1 }],
+      ratesByDay,
+      now,
+    );
+
+    expect(acc.periodKey).toBe("2025-12-20");
+    expect(acc.kwhSoFar).toBeCloseTo(1);
+  });
+});
+
 describe("computeStatus", () => {
   it("computes current demand/cost and today's total from telemetry + rates", async () => {
     vi.stubGlobal(
@@ -195,15 +253,19 @@ describe("computeStatus", () => {
     );
 
     const now = new Date("2026-01-15T10:06:00Z");
-    const { status, accumulator } = await computeStatus(testEnv, null, now);
+    const { status, accumulator, monthAccumulator } = await computeStatus(testEnv, null, null, now);
 
     expect(status.currentDemandKw).toBe(2);
     expect(status.currentRate.pencePerKwh).toBe(20);
     expect(status.currentCostPerHourGbp).toBeCloseTo((2 * 20) / 100);
     expect(status.todayTotalKwh).toBeCloseTo(3);
     expect(status.todayTotalCostGbp).toBeCloseTo((3 * 20) / 100);
+    expect(status.thisMonthTotalKwh).toBeCloseTo(3);
+    expect(status.thisMonthTotalCostGbp).toBeCloseTo((3 * 20) / 100);
+    expect(status.billingPeriodStart).toBe("2025-12-20");
     expect(status.stale).toBe(false);
     expect(accumulator.lastReadingAt).toBe("2026-01-15T10:05:00Z");
+    expect(monthAccumulator.lastReadingAt).toBe("2026-01-15T10:05:00Z");
 
     vi.unstubAllGlobals();
   });
@@ -223,11 +285,56 @@ describe("computeStatus", () => {
       costGbpSoFar: 0.5,
       lastReadingAt: "2026-01-15T10:05:00Z",
     };
+    const previousMonth: MonthAccumulator = {
+      periodKey: "2025-12-20",
+      kwhSoFar: 40,
+      costGbpSoFar: 4,
+      lastReadingAt: "2026-01-15T10:05:00Z",
+    };
 
-    const { status } = await computeStatus(testEnv, previous, new Date("2026-01-15T10:11:00Z"));
+    const { status } = await computeStatus(
+      testEnv,
+      previous,
+      previousMonth,
+      new Date("2026-01-15T10:11:00Z"),
+    );
 
     expect(status.todayTotalKwh).toBeCloseTo(6);
     expect(status.todayTotalCostGbp).toBeCloseTo(0.6);
+    expect(status.thisMonthTotalKwh).toBeCloseTo(41);
+    expect(status.thisMonthTotalCostGbp).toBeCloseTo(4.1);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("resets the month total on a billing-period rollover even if today's accumulator hasn't reset", async () => {
+    // 2026-01-20T00:00:00Z is still within the same London calendar day as
+    // a hypothetical earlier-today reading, but crosses the 20th billing
+    // boundary, so the month accumulator must reset independently.
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-20T10:00:00Z", demand: 500, consumptionDelta: 1000 }],
+        rate: { pencePerKwh: 10, validFrom: "2026-01-20T00:00:00Z", validTo: "2026-01-21T00:00:00Z" },
+      }),
+    );
+
+    const previousMonth: MonthAccumulator = {
+      periodKey: "2025-12-20",
+      kwhSoFar: 99,
+      costGbpSoFar: 20,
+      lastReadingAt: "2026-01-19T23:00:00Z",
+    };
+
+    const { status, monthAccumulator } = await computeStatus(
+      testEnv,
+      null,
+      previousMonth,
+      new Date("2026-01-20T10:01:00Z"),
+    );
+
+    expect(monthAccumulator.periodKey).toBe("2026-01-20");
+    expect(status.thisMonthTotalKwh).toBeCloseTo(1);
 
     vi.unstubAllGlobals();
   });
@@ -243,12 +350,15 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       }),
     );
 
-    const computed = await computeStatus(testEnv, null, now);
+    const computed = await computeStatus(testEnv, null, null, now);
     await persistComputedStatus(testEnv, computed, now);
     vi.unstubAllGlobals();
 
     const loadedAccumulator = await loadTodayAccumulator(testEnv);
     expect(loadedAccumulator).toEqual(computed.accumulator);
+
+    const loadedMonthAccumulator = await loadMonthAccumulator(testEnv);
+    expect(loadedMonthAccumulator).toEqual(computed.monthAccumulator);
   });
 
   it("getOrComputeStatus returns a fresh cached snapshot without recomputing", async () => {
@@ -260,6 +370,9 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       currentCostPerHourGbp: 0.2,
       todayTotalKwh: 3,
       todayTotalCostGbp: 0.6,
+      thisMonthTotalKwh: 45,
+      thisMonthTotalCostGbp: 9,
+      billingPeriodStart: "2025-12-20",
       stale: false,
       snapshotAgeSeconds: 0,
     };
@@ -274,6 +387,7 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
     expect(result.stale).toBe(false);
     expect(result.snapshotAgeSeconds).toBe(60);
     expect(result.todayTotalKwh).toBe(3);
+    expect(result.thisMonthTotalKwh).toBe(45);
 
     vi.unstubAllGlobals();
   });
@@ -287,6 +401,9 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       currentCostPerHourGbp: 0.2,
       todayTotalKwh: 3,
       todayTotalCostGbp: 0.6,
+      thisMonthTotalKwh: 45,
+      thisMonthTotalCostGbp: 9,
+      billingPeriodStart: "2025-12-20",
       stale: false,
       snapshotAgeSeconds: 0,
     };

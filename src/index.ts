@@ -1,5 +1,11 @@
 import { isAuthorized } from "./auth";
-import { computeStatus, getOrComputeStatus, loadTodayAccumulator, persistComputedStatus } from "./compute";
+import {
+  computeStatus,
+  getOrComputeStatus,
+  loadMonthAccumulator,
+  loadTodayAccumulator,
+  persistComputedStatus,
+} from "./compute";
 import type { Env } from "./types";
 
 function jsonResponse(body: unknown, status: number): Response {
@@ -28,7 +34,8 @@ export default {
     try {
       const now = new Date();
       const previousAccumulator = await loadTodayAccumulator(env);
-      const computed = await computeStatus(env, previousAccumulator, now);
+      const previousMonthAccumulator = await loadMonthAccumulator(env);
+      const computed = await computeStatus(env, previousAccumulator, previousMonthAccumulator, now);
       await persistComputedStatus(env, computed, now);
     } catch (error) {
       console.error("octo-mon cron tick failed:", error);

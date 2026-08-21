@@ -57,6 +57,14 @@ function formatTime(isoString) {
   return new Date(isoString).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+function formatShortDate(isoDateString) {
+  return new Date(`${isoDateString}T00:00:00Z`).toLocaleDateString([], {
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  });
+}
+
 function colorForRate(pencePerKwh) {
   if (pencePerKwh < 15) return new Color("#4CAF50");
   if (pencePerKwh < 30) return new Color("#FFA726");
@@ -106,6 +114,16 @@ function buildStatusWidget(status, stale) {
     const todayKwh = widget.addText(`${status.todayTotalKwh.toFixed(2)} kWh so far`);
     todayKwh.font = Font.systemFont(11);
     todayKwh.textColor = Color.gray();
+
+    widget.addSpacer(8);
+
+    const monthLabel = widget.addText(`THIS MONTH (since ${formatShortDate(status.billingPeriodStart)})`);
+    monthLabel.font = Font.mediumSystemFont(10);
+    monthLabel.textColor = Color.gray();
+
+    const monthCost = widget.addText(formatPounds(status.thisMonthTotalCostGbp));
+    monthCost.font = Font.boldSystemFont(16);
+    monthCost.textColor = Color.white();
   }
 
   widget.addSpacer();

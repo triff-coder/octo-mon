@@ -5,12 +5,14 @@ An iPhone home-screen widget (built with [Scriptable](https://scriptable.app/)) 
 - **Current cost**: live demand from your Octopus Home Mini × the current Octopus
   Agile unit rate, as £/hr
 - **Today's total**: running spend so far today, in £
+- **This month's total**: running spend since the start of the current Octopus
+  billing period (the 20th of each month), in £
 
 A small [Cloudflare Worker](https://workers.cloudflare.com/) sits in between the
 widget and Octopus: it holds your Octopus credentials as secrets, polls Octopus
-every 5 minutes via a Cron Trigger, keeps a running "today" total in Workers KV,
-and exposes one small JSON endpoint (`GET /status`) that the widget polls,
-protected by a shared-secret token.
+every 5 minutes via a Cron Trigger, keeps running "today" and "this month"
+totals in Workers KV, and exposes one small JSON endpoint (`GET /status`) that
+the widget polls, protected by a shared-secret token.
 
 ## How it works
 
@@ -114,10 +116,19 @@ You should get back JSON like:
   "currentCostPerHourGbp": 0.197,
   "todayTotalKwh": 14.2,
   "todayTotalCostGbp": 3.87,
+  "thisMonthTotalKwh": 187.4,
+  "thisMonthTotalCostGbp": 41.92,
+  "billingPeriodStart": "2026-08-20",
   "stale": false,
   "snapshotAgeSeconds": 42
 }
 ```
+
+`thisMonthTotalKwh`/`thisMonthTotalCostGbp` track spend since `billingPeriodStart` —
+Octopus billing months run from the 20th of one calendar month to the 19th of
+the next, not the calendar month. Like the daily total, this only accumulates
+from whenever the Worker starts tracking it forward — it doesn't backfill
+usage from earlier in the billing period on a cold start.
 
 If it's the very first request, the Worker computes live (a bit slower); after
 that, the 5-minute cron keeps a warm snapshot so requests are fast.

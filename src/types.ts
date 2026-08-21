@@ -41,6 +41,18 @@ export interface TodayAccumulator {
   lastReadingAt: string;
 }
 
+/**
+ * The running "this billing month so far" accumulator stored in KV. Resets
+ * on the Octopus billing cycle boundary (the 20th of each month) rather
+ * than at local midnight.
+ */
+export interface MonthAccumulator {
+  periodKey: string;
+  kwhSoFar: number;
+  costGbpSoFar: number;
+  lastReadingAt: string;
+}
+
 /** The JSON payload served from GET /status. */
 export interface StatusResponse {
   generatedAt: string;
@@ -53,6 +65,9 @@ export interface StatusResponse {
   currentCostPerHourGbp: number;
   todayTotalKwh: number;
   todayTotalCostGbp: number;
+  thisMonthTotalKwh: number;
+  thisMonthTotalCostGbp: number;
+  billingPeriodStart: string;
   stale: boolean;
   snapshotAgeSeconds: number;
 }

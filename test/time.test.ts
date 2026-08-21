@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   addDaysToDateKey,
+  billingPeriodKey,
+  isSameBillingPeriod,
   isSameLondonDay,
   londonDateKey,
   londonMidnightUtc,
   minutesBetween,
+  nextBillingPeriodStartUtc,
   nextLondonMidnightUtc,
   secondsBetween,
 } from "../src/time";
@@ -103,6 +106,54 @@ describe("nextLondonMidnightUtc", () => {
     const afterTransition = new Date("2026-10-25T10:00:00Z");
     expect(nextLondonMidnightUtc(afterTransition).toISOString()).toBe(
       "2026-10-26T00:00:00.000Z",
+    );
+  });
+});
+
+describe("billingPeriodKey", () => {
+  it("stays in the current month on or after the 20th", () => {
+    expect(billingPeriodKey(new Date("2026-08-20T10:00:00Z"))).toBe("2026-08-20");
+    expect(billingPeriodKey(new Date("2026-08-31T23:00:00Z"))).toBe("2026-08-20");
+  });
+
+  it("rolls back to the previous month's 20th before the 20th", () => {
+    // 20:00 UTC in August is 21:00 local (BST), still 19 August.
+    expect(billingPeriodKey(new Date("2026-08-19T20:00:00Z"))).toBe("2026-07-20");
+    expect(billingPeriodKey(new Date("2026-08-01T00:00:00Z"))).toBe("2026-07-20");
+  });
+
+  it("handles the January/December year rollover", () => {
+    expect(billingPeriodKey(new Date("2026-01-10T00:00:00Z"))).toBe("2025-12-20");
+    expect(billingPeriodKey(new Date("2026-12-25T00:00:00Z"))).toBe("2026-12-20");
+  });
+});
+
+describe("isSameBillingPeriod", () => {
+  it("is true within the same billing period", () => {
+    // 00:00 UTC on 20 Aug is 01:00 local (BST); 22:00 UTC on 19 Sep is 23:00
+    // local (BST) — both fall within the [20 Aug, 20 Sep) billing period.
+    expect(
+      isSameBillingPeriod(new Date("2026-08-20T00:00:00Z"), new Date("2026-09-19T22:00:00Z")),
+    ).toBe(true);
+  });
+
+  it("is false across a billing period boundary", () => {
+    expect(
+      isSameBillingPeriod(new Date("2026-08-19T22:00:00Z"), new Date("2026-08-19T23:30:00Z")),
+    ).toBe(false);
+  });
+});
+
+describe("nextBillingPeriodStartUtc", () => {
+  it("returns the UTC instant of the 20th of the following month", () => {
+    expect(nextBillingPeriodStartUtc(new Date("2026-08-25T10:00:00Z")).toISOString()).toBe(
+      "2026-09-19T23:00:00.000Z", // 20 Sep 2026 local (BST, UTC+1)
+    );
+  });
+
+  it("rolls over the year in December", () => {
+    expect(nextBillingPeriodStartUtc(new Date("2026-12-25T10:00:00Z")).toISOString()).toBe(
+      "2027-01-20T00:00:00.000Z",
     );
   });
 });

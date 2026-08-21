@@ -361,6 +361,46 @@ describe("computeStatus", () => {
   });
 });
 
+describe("computeStatus month/today invariant", () => {
+  it("floors this month's total to at least today's, since today is always a subset of the billing period", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [
+          { readAt: "2026-01-15T10:00:00Z", demand: 500, consumptionDelta: 1000 },
+          { readAt: "2026-01-15T10:03:00Z", demand: 500, consumptionDelta: 1000 },
+        ],
+        pencePerKwh: 10,
+      }),
+    );
+
+    // The month accumulator's cursor is ahead of both telemetry points, so
+    // advanceMonthAccumulator alone would skip them (kwhSoFar stays 0),
+    // while today (starting from null) applies both (kwhSoFar = 2) — the
+    // exact skew this floor exists to correct.
+    const previousMonth: MonthAccumulator = {
+      periodKey: "2025-12-20",
+      kwhSoFar: 0,
+      costGbpSoFar: 0,
+      lastReadingAt: "2026-01-15T10:05:00Z",
+    };
+
+    const { status, monthAccumulator } = await computeStatus(
+      testEnv,
+      null,
+      previousMonth,
+      new Date("2026-01-15T10:06:00Z"),
+    );
+
+    expect(status.todayTotalKwh).toBeCloseTo(2);
+    expect(status.thisMonthTotalKwh).toBeCloseTo(2);
+    expect(status.thisMonthTotalKwh).toBeGreaterThanOrEqual(status.todayTotalKwh);
+    expect(monthAccumulator.kwhSoFar).toBeCloseTo(2);
+
+    vi.unstubAllGlobals();
+  });
+});
+
 describe("computeStatus month backfill", () => {
   it("backfills already-elapsed days in the billing period from historical consumption on a cold start", async () => {
     // Billing period starts 2025-12-20; "today" is 2026-01-15. The 14th

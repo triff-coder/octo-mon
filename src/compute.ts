@@ -228,7 +228,23 @@ export async function computeStatus(
 
   const points = await fetchTelemetry(env, jwt, fetchSince, now);
   const accumulator = advanceTodayAccumulator(previousAccumulator, points, ratesByDay, now);
-  const monthAccumulator = advanceMonthAccumulator(resolvedMonthAccumulator, points, ratesByDay, now);
+  let monthAccumulator = advanceMonthAccumulator(resolvedMonthAccumulator, points, ratesByDay, now);
+
+  // Today's usage is always a subset of the current billing period, so this
+  // month's total can never legitimately be less than today's. If it ever
+  // is — e.g. residual skew from a backfill that resolved after today's own
+  // reset during crash recovery — self-heal (and persist the correction)
+  // rather than just masking it in this one response.
+  if (
+    monthAccumulator.kwhSoFar < accumulator.kwhSoFar ||
+    monthAccumulator.costGbpSoFar < accumulator.costGbpSoFar
+  ) {
+    monthAccumulator = {
+      ...monthAccumulator,
+      kwhSoFar: Math.max(monthAccumulator.kwhSoFar, accumulator.kwhSoFar),
+      costGbpSoFar: Math.max(monthAccumulator.costGbpSoFar, accumulator.costGbpSoFar),
+    };
+  }
 
   const latestPoint = points.at(-1);
   const currentDemandKw = latestPoint?.demandKw ?? 0;

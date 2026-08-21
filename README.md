@@ -1,1 +1,170 @@
 # octo-mon
+
+An iPhone home-screen widget (built with [Scriptable](https://scriptable.app/)) showing:
+
+- **Current cost**: live demand from your Octopus Home Mini × the current Octopus
+  Agile unit rate, as £/hr
+- **Today's total**: running spend so far today, in £
+
+A small [Cloudflare Worker](https://workers.cloudflare.com/) sits in between the
+widget and Octopus: it holds your Octopus credentials as secrets, polls Octopus
+every 5 minutes via a Cron Trigger, keeps a running "today" total in Workers KV,
+and exposes one small JSON endpoint (`GET /status`) that the widget polls,
+protected by a shared-secret token.
+
+## How it works
+
+```
+Octopus Kraken GraphQL API (live telemetry)  ─┐
+Octopus REST API (Agile unit rates)          ─┼─▶ Cloudflare Worker ─▶ Scriptable widget
+                                               │      (cron + KV)         (iPhone home screen)
+```
+
+- Live consumption comes from the Kraken GraphQL API's `smartMeterTelemetry`
+  query for your Home Mini's device id, not the older half-hourly REST
+  consumption endpoint (which lags too much to be "current").
+- Agile unit rates come from the standard REST rates endpoint
+  (`/products/{product_code}/electricity-tariffs/{tariff_code}/standard-unit-rates/`).
+- A Cron Trigger runs every 5 minutes, pricing new telemetry against the rate
+  in effect at the time and accumulating it into a "today" total that resets
+  at local (Europe/London) midnight.
+- `GET /status` normally just reads the latest cached snapshot from KV (fast,
+  no external calls); if the snapshot is missing or stale it falls back to
+  computing live.
+
+## 1. Get your Octopus credentials
+
+From your [Octopus Energy account dashboard](https://octopus.energy/dashboard/) →
+**Personal Details** → **API access**, you'll find:
+
+- **API key** — `OCTOPUS_API_KEY`
+- **Account number** (e.g. `A-1234ABCD`) — `OCTOPUS_ACCOUNT_NUMBER`
+
+Your **MPAN** (meter point number) and **meter serial number** are on the same
+page or on a bill.
+
+Your Home Mini's **device id** isn't shown in the dashboard. Find it with a
+one-off GraphQL query using your API key:
+
+```bash
+# 1. Get a Kraken token
+curl -s https://api.octopus.energy/v1/graphql/ \
+  -H "Content-Type: application/json" \
+  -d '{"query":"mutation($apiKey:String!){obtainKrakenToken(input:{APIKey:$apiKey}){token}}","variables":{"apiKey":"<YOUR_API_KEY>"}}'
+
+# 2. Use the returned token to list your smart devices
+curl -s https://api.octopus.energy/v1/graphql/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: JWT <TOKEN_FROM_STEP_1>" \
+  -d '{"query":"query($accountNumber:String!){account(accountNumber:$accountNumber){electricityAgreements(active:true){meterPoint{meters(includeInactive:false){smartDevices{deviceId}}}}}}","variables":{"accountNumber":"<YOUR_ACCOUNT_NUMBER>"}}'
+```
+
+The `deviceId` in the response is your `OCTOPUS_DEVICE_ID`.
+
+You'll also need your Agile **product code** and **tariff code** (e.g.
+`AGILE-24-10-01` / `E-1R-AGILE-24-10-01-{region letter}`) — these are visible on
+your account's tariff details, or check https://api.octopus.energy/v1/products/
+for the current Agile product. Octopus periodically rolls new Agile product
+versions, so revisit this occasionally.
+
+## 2. Deploy the Cloudflare Worker
+
+```bash
+npm install
+npx wrangler kv namespace create OCTOMON_KV
+```
+
+Paste the returned namespace `id` into `wrangler.jsonc`'s `kv_namespaces[0].id`,
+and update `OCTOPUS_PRODUCT_CODE` / `OCTOPUS_TARIFF_CODE` in the `vars` section
+if they differ from the defaults.
+
+Set the secrets (you'll be prompted for each value):
+
+```bash
+npx wrangler secret put OCTOPUS_API_KEY
+npx wrangler secret put OCTOPUS_ACCOUNT_NUMBER
+npx wrangler secret put OCTOPUS_MPAN
+npx wrangler secret put OCTOPUS_METER_SERIAL
+npx wrangler secret put OCTOPUS_DEVICE_ID
+npx wrangler secret put WIDGET_SHARED_SECRET   # make up a long random string
+```
+
+Deploy:
+
+```bash
+npx wrangler deploy
+```
+
+Note the `https://octo-mon.<your-subdomain>.workers.dev` URL it prints.
+
+Smoke test:
+
+```bash
+curl -H "X-Widget-Secret: <your WIDGET_SHARED_SECRET>" \
+  https://octo-mon.<your-subdomain>.workers.dev/status
+```
+
+You should get back JSON like:
+
+```json
+{
+  "generatedAt": "2026-08-21T14:32:10.000Z",
+  "currentRate": { "pencePerKwh": 23.4, "validFrom": "...", "validTo": "..." },
+  "currentDemandKw": 0.842,
+  "currentCostPerHourGbp": 0.197,
+  "todayTotalKwh": 14.2,
+  "todayTotalCostGbp": 3.87,
+  "stale": false,
+  "snapshotAgeSeconds": 42
+}
+```
+
+If it's the very first request, the Worker computes live (a bit slower); after
+that, the 5-minute cron keeps a warm snapshot so requests are fast.
+
+### Local development
+
+Copy `.dev.vars.example` to `.dev.vars` and fill in real values, then:
+
+```bash
+npm run dev      # wrangler dev, local Worker with live-reload
+npm run typecheck
+npm test
+```
+
+## 3. Install the widget in Scriptable
+
+1. Install [Scriptable](https://apps.apple.com/app/scriptable/id1405459188) from
+   the App Store if you don't have it.
+2. Create a new script in Scriptable and paste in the contents of
+   [`scriptable/OctoMon.js`](./scriptable/OctoMon.js).
+3. Edit the top of the script:
+   - `WORKER_URL` → your `https://octo-mon.<your-subdomain>.workers.dev/status` URL
+   - `SHARED_SECRET` → the `WIDGET_SHARED_SECRET` value you set above
+4. Run the script once in-app to confirm it renders (small/medium preview).
+5. Long-press your home screen → **+** → search **Scriptable** → add a widget,
+   choose the small or medium size, then edit the widget and select this
+   script.
+
+The widget shows current £/hr (colour-coded by rate band) and today's running
+total. If the Worker is briefly unreachable, it falls back to the last
+successfully fetched data and shows a "STALE" badge with the time it's stale
+since, rather than going blank.
+
+## Development
+
+- `npm run typecheck` — TypeScript, no emit
+- `npm test` — Vitest unit/integration tests (via
+  [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/),
+  Miniflare-backed, no real network calls)
+- `npm run dev` — local Worker via `wrangler dev`
+- `npm run deploy` — deploy to Cloudflare
+
+## Notes / caveats
+
+- Octopus's Kraken GraphQL schema (`obtainKrakenToken`, `smartMeterTelemetry`)
+  isn't formally versioned public API — if telemetry stops working, check
+  https://developer.octopus.energy/ for schema changes and adjust
+  `src/octopus.ts` accordingly.
+- This is a personal, single-user project — the Worker trusts anyone who has
+  the shared secret, and there's no multi-tenant account handling.

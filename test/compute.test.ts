@@ -1,0 +1,325 @@
+import { env } from "cloudflare:test";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  advanceTodayAccumulator,
+  computeStatus,
+  findRateForInstant,
+  getOrComputeStatus,
+  loadTodayAccumulator,
+  persistComputedStatus,
+} from "../src/compute";
+import type { AgileRate, Env, StatusResponse, TodayAccumulator } from "../src/types";
+
+const testEnv = env as unknown as Env;
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+interface MockApiOptions {
+  telemetry?: { readAt: string; demand: string | number; consumptionDelta: string | number }[];
+  rate?: { pencePerKwh: number; validFrom: string; validTo: string };
+}
+
+function mockOctopusApi(opts: MockApiOptions) {
+  return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const url = input.toString();
+
+    if (url.includes("/graphql/")) {
+      const body = JSON.parse((init?.body as string) ?? "{}") as { query: string };
+      if (body.query.includes("obtainKrakenToken")) {
+        return jsonResponse({ data: { obtainKrakenToken: { token: "jwt-1" } } });
+      }
+      if (body.query.includes("smartMeterTelemetry")) {
+        return jsonResponse({ data: { smartMeterTelemetry: opts.telemetry ?? [] } });
+      }
+      throw new Error(`Unexpected GraphQL query: ${body.query}`);
+    }
+
+    if (url.includes("/standard-unit-rates/")) {
+      const rate = opts.rate ?? {
+        pencePerKwh: 20,
+        validFrom: "2026-01-15T00:00:00Z",
+        validTo: "2026-01-16T00:00:00Z",
+      };
+      return jsonResponse({
+        count: 1,
+        next: null,
+        previous: null,
+        results: [
+          {
+            value_exc_vat: rate.pencePerKwh / 1.05,
+            value_inc_vat: rate.pencePerKwh,
+            valid_from: rate.validFrom,
+            valid_to: rate.validTo,
+            payment_method: "DIRECT_DEBIT",
+          },
+        ],
+      });
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  });
+}
+
+beforeEach(async () => {
+  const kv = testEnv.OCTOMON_KV;
+  const list = await kv.list();
+  await Promise.all(list.keys.map((k) => kv.delete(k.name)));
+
+  testEnv.OCTOPUS_API_KEY = "sk_test_123";
+  testEnv.OCTOPUS_DEVICE_ID = "00-00-00-00-00-00-00-00";
+  testEnv.OCTOPUS_PRODUCT_CODE = "AGILE-24-10-01";
+  testEnv.OCTOPUS_TARIFF_CODE = "E-1R-AGILE-24-10-01-C";
+});
+
+describe("findRateForInstant", () => {
+  const rates: AgileRate[] = [
+    { pencePerKwh: 20, validFrom: "2026-01-15T10:00:00Z", validTo: "2026-01-15T10:30:00Z" },
+    { pencePerKwh: 25, validFrom: "2026-01-15T10:30:00Z", validTo: "2026-01-15T11:00:00Z" },
+  ];
+
+  it("finds the rate whose window contains the instant (validFrom inclusive, validTo exclusive)", () => {
+    expect(findRateForInstant(rates, new Date("2026-01-15T10:00:00Z"))?.pencePerKwh).toBe(20);
+    expect(findRateForInstant(rates, new Date("2026-01-15T10:29:59Z"))?.pencePerKwh).toBe(20);
+    expect(findRateForInstant(rates, new Date("2026-01-15T10:30:00Z"))?.pencePerKwh).toBe(25);
+  });
+
+  it("returns null when no rate covers the instant", () => {
+    expect(findRateForInstant(rates, new Date("2026-01-15T12:00:00Z"))).toBeNull();
+  });
+});
+
+describe("advanceTodayAccumulator", () => {
+  const rates: AgileRate[] = [
+    { pencePerKwh: 20, validFrom: "2026-01-15T10:00:00Z", validTo: "2026-01-15T10:30:00Z" },
+  ];
+  const ratesByDay = new Map([["2026-01-15", rates]]);
+  const now = new Date("2026-01-15T10:15:00Z");
+
+  it("accumulates kWh and cost for new points, starting from null", () => {
+    const points = [
+      { readAt: "2026-01-15T10:00:00Z", consumptionDeltaKwh: 1 },
+      { readAt: "2026-01-15T10:10:00Z", consumptionDeltaKwh: 2 },
+    ];
+
+    const acc = advanceTodayAccumulator(null, points, ratesByDay, now);
+
+    expect(acc.kwhSoFar).toBeCloseTo(3);
+    expect(acc.costGbpSoFar).toBeCloseTo((1 * 20) / 100 + (2 * 20) / 100);
+    expect(acc.lastReadingAt).toBe("2026-01-15T10:10:00Z");
+    expect(acc.dateKey).toBe("2026-01-15");
+  });
+
+  it("does not double-count points at or before the accumulator's last reading", () => {
+    const existing: TodayAccumulator = {
+      dateKey: "2026-01-15",
+      kwhSoFar: 1,
+      costGbpSoFar: 0.2,
+      lastReadingAt: "2026-01-15T10:05:00Z",
+    };
+    const points = [
+      { readAt: "2026-01-15T10:00:00Z", consumptionDeltaKwh: 1 }, // before cutoff, skipped
+      { readAt: "2026-01-15T10:05:00Z", consumptionDeltaKwh: 1 }, // at cutoff, skipped
+      { readAt: "2026-01-15T10:10:00Z", consumptionDeltaKwh: 2 }, // new
+    ];
+
+    const acc = advanceTodayAccumulator(existing, points, ratesByDay, now);
+
+    expect(acc.kwhSoFar).toBeCloseTo(3); // 1 (existing) + 2 (new)
+    expect(acc.lastReadingAt).toBe("2026-01-15T10:10:00Z");
+  });
+
+  it("does not mutate the accumulator object passed in", () => {
+    const existing: TodayAccumulator = {
+      dateKey: "2026-01-15",
+      kwhSoFar: 1,
+      costGbpSoFar: 0.2,
+      lastReadingAt: "2026-01-15T10:05:00Z",
+    };
+    const frozenCopy = { ...existing };
+
+    advanceTodayAccumulator(
+      existing,
+      [{ readAt: "2026-01-15T10:10:00Z", consumptionDeltaKwh: 2 }],
+      ratesByDay,
+      now,
+    );
+
+    expect(existing).toEqual(frozenCopy);
+  });
+
+  it("resets the accumulator when the previous reading was on a different local day", () => {
+    const yesterday: TodayAccumulator = {
+      dateKey: "2026-01-14",
+      kwhSoFar: 99,
+      costGbpSoFar: 20,
+      lastReadingAt: "2026-01-14T23:00:00Z",
+    };
+
+    const acc = advanceTodayAccumulator(
+      yesterday,
+      [{ readAt: "2026-01-15T10:00:00Z", consumptionDeltaKwh: 1 }],
+      ratesByDay,
+      now,
+    );
+
+    expect(acc.dateKey).toBe("2026-01-15");
+    expect(acc.kwhSoFar).toBeCloseTo(1);
+  });
+
+  it("skips (but still advances past) a point with no matching rate", () => {
+    const points = [{ readAt: "2026-01-15T11:00:00Z", consumptionDeltaKwh: 5 }]; // outside rates window
+    const acc = advanceTodayAccumulator(null, points, ratesByDay, now);
+
+    expect(acc.kwhSoFar).toBe(0);
+    expect(acc.costGbpSoFar).toBe(0);
+    expect(acc.lastReadingAt).toBe("2026-01-15T11:00:00Z");
+  });
+});
+
+describe("computeStatus", () => {
+  it("computes current demand/cost and today's total from telemetry + rates", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [
+          { readAt: "2026-01-15T10:00:00Z", demand: 1000, consumptionDelta: 1000 },
+          { readAt: "2026-01-15T10:05:00Z", demand: 2000, consumptionDelta: 2000 },
+        ],
+        rate: { pencePerKwh: 20, validFrom: "2026-01-15T00:00:00Z", validTo: "2026-01-16T00:00:00Z" },
+      }),
+    );
+
+    const now = new Date("2026-01-15T10:06:00Z");
+    const { status, accumulator } = await computeStatus(testEnv, null, now);
+
+    expect(status.currentDemandKw).toBe(2);
+    expect(status.currentRate.pencePerKwh).toBe(20);
+    expect(status.currentCostPerHourGbp).toBeCloseTo((2 * 20) / 100);
+    expect(status.todayTotalKwh).toBeCloseTo(3);
+    expect(status.todayTotalCostGbp).toBeCloseTo((3 * 20) / 100);
+    expect(status.stale).toBe(false);
+    expect(accumulator.lastReadingAt).toBe("2026-01-15T10:05:00Z");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("resumes from a same-day accumulator without double-counting", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:10:00Z", demand: 500, consumptionDelta: 1000 }],
+        rate: { pencePerKwh: 10, validFrom: "2026-01-15T00:00:00Z", validTo: "2026-01-16T00:00:00Z" },
+      }),
+    );
+
+    const previous: TodayAccumulator = {
+      dateKey: "2026-01-15",
+      kwhSoFar: 5,
+      costGbpSoFar: 0.5,
+      lastReadingAt: "2026-01-15T10:05:00Z",
+    };
+
+    const { status } = await computeStatus(testEnv, previous, new Date("2026-01-15T10:11:00Z"));
+
+    expect(status.todayTotalKwh).toBeCloseTo(6);
+    expect(status.todayTotalCostGbp).toBeCloseTo(0.6);
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", () => {
+  it("round-trips a computed status + accumulator through KV", async () => {
+    const now = new Date("2026-01-15T10:06:00Z");
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:00:00Z", demand: 1000, consumptionDelta: 1000 }],
+      }),
+    );
+
+    const computed = await computeStatus(testEnv, null, now);
+    await persistComputedStatus(testEnv, computed, now);
+    vi.unstubAllGlobals();
+
+    const loadedAccumulator = await loadTodayAccumulator(testEnv);
+    expect(loadedAccumulator).toEqual(computed.accumulator);
+  });
+
+  it("getOrComputeStatus returns a fresh cached snapshot without recomputing", async () => {
+    const now = new Date("2026-01-15T10:06:00Z");
+    const cached: StatusResponse = {
+      generatedAt: new Date(now.getTime() - 60_000).toISOString(),
+      currentRate: { pencePerKwh: 20, validFrom: "2026-01-15T10:00:00Z", validTo: "2026-01-15T10:30:00Z" },
+      currentDemandKw: 1,
+      currentCostPerHourGbp: 0.2,
+      todayTotalKwh: 3,
+      todayTotalCostGbp: 0.6,
+      stale: false,
+      snapshotAgeSeconds: 0,
+    };
+    await testEnv.OCTOMON_KV.put("status:latest", JSON.stringify(cached));
+
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getOrComputeStatus(testEnv, now);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.stale).toBe(false);
+    expect(result.snapshotAgeSeconds).toBe(60);
+    expect(result.todayTotalKwh).toBe(3);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("getOrComputeStatus flags an old-but-not-yet-expired snapshot as stale", async () => {
+    const now = new Date("2026-01-15T10:06:00Z");
+    const cached: StatusResponse = {
+      generatedAt: new Date(now.getTime() - 20 * 60_000).toISOString(),
+      currentRate: { pencePerKwh: 20, validFrom: "2026-01-15T09:30:00Z", validTo: "2026-01-15T10:00:00Z" },
+      currentDemandKw: 1,
+      currentCostPerHourGbp: 0.2,
+      todayTotalKwh: 3,
+      todayTotalCostGbp: 0.6,
+      stale: false,
+      snapshotAgeSeconds: 0,
+    };
+    await testEnv.OCTOMON_KV.put("status:latest", JSON.stringify(cached));
+
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getOrComputeStatus(testEnv, now);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.stale).toBe(true);
+    expect(result.snapshotAgeSeconds).toBe(1200);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("getOrComputeStatus computes live and persists when no snapshot is cached", async () => {
+    const now = new Date("2026-01-15T10:06:00Z");
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:00:00Z", demand: 1500, consumptionDelta: 1500 }],
+      }),
+    );
+
+    const result = await getOrComputeStatus(testEnv, now);
+    vi.unstubAllGlobals();
+
+    expect(result.currentDemandKw).toBe(1.5);
+    expect(result.todayTotalKwh).toBeCloseTo(1.5);
+
+    const persisted = await testEnv.OCTOMON_KV.get("status:latest", "json");
+    expect(persisted).not.toBeNull();
+  });
+});

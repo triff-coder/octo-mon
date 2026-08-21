@@ -126,9 +126,14 @@ You should get back JSON like:
 
 `thisMonthTotalKwh`/`thisMonthTotalCostGbp` track spend since `billingPeriodStart` —
 Octopus billing months run from the 20th of one calendar month to the 19th of
-the next, not the calendar month. Like the daily total, this only accumulates
-from whenever the Worker starts tracking it forward — it doesn't backfill
-usage from earlier in the billing period on a cold start.
+the next, not the calendar month. `todayTotalKwh`/`todayTotalCostGbp` only ever
+cover today (built purely from live telemetry, no backfill). The month total is
+different: on a cold start (first run, KV loss, or a new billing period), the
+Worker backfills every already-completed day since `billingPeriodStart` from
+Octopus's historical consumption REST endpoint before continuing forward with
+live telemetry — so it reflects the whole billing period so far, not just
+however long the Worker happens to have been running. A day the meter has no
+data for (e.g. before a Home Mini was installed) simply contributes zero.
 
 If it's the very first request, the Worker computes live (a bit slower); after
 that, the 5-minute cron keeps a warm snapshot so requests are fast.

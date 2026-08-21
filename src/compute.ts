@@ -1,5 +1,5 @@
 import { getJson, putJson } from "./cache";
-import { fetchAgileRatesForDay, fetchTelemetry, obtainKrakenJwt } from "./octopus";
+import { fetchAgileRatesForDay, fetchHistoricalConsumption, fetchTelemetry, obtainKrakenJwt } from "./octopus";
 import {
   billingPeriodKey,
   isSameBillingPeriod,
@@ -109,6 +109,72 @@ export function advanceMonthAccumulator(
   return acc;
 }
 
+/**
+ * Backfills a fresh MonthAccumulator's starting balance from the REST
+ * consumption endpoint, covering every already-completed day between the
+ * start of the current billing period and the start of today. Used only
+ * when there's no usable in-period accumulator state to carry forward
+ * (first run, KV loss, or a billing-period rollover) — live telemetry
+ * still drives everything from today onward. Returns a zero balance
+ * without any network call when the billing period started today (nothing
+ * to backfill).
+ */
+async function backfillMonthAccumulator(env: Env, now: Date): Promise<MonthAccumulator> {
+  const periodKey = billingPeriodKey(now);
+  const todayKey = londonDateKey(now);
+  const periodStart = londonMidnightUtc(periodKey);
+  const todayStart = londonMidnightUtc(todayKey);
+
+  if (periodStart.getTime() >= todayStart.getTime()) {
+    return { periodKey, kwhSoFar: 0, costGbpSoFar: 0, lastReadingAt: todayStart.toISOString() };
+  }
+
+  const intervals = await fetchHistoricalConsumption(env, periodStart, todayStart);
+  const ratesCache = new Map<string, AgileRate[]>();
+
+  let kwhSoFar = 0;
+  let costGbpSoFar = 0;
+
+  for (const interval of intervals) {
+    const intervalStart = new Date(interval.intervalStart);
+    const dayKey = londonDateKey(intervalStart);
+
+    let rates = ratesCache.get(dayKey);
+    if (!rates) {
+      rates = await fetchAgileRatesForDay(env, dayKey);
+      ratesCache.set(dayKey, rates);
+    }
+
+    const rate = findRateForInstant(rates, intervalStart);
+    if (rate) {
+      kwhSoFar += interval.consumptionKwh;
+      costGbpSoFar += (interval.consumptionKwh * rate.pencePerKwh) / 100;
+    }
+  }
+
+  return { periodKey, kwhSoFar, costGbpSoFar, lastReadingAt: todayStart.toISOString() };
+}
+
+/**
+ * Returns the month accumulator to build on for `now`: the existing one if
+ * it's still within the current billing period, otherwise a fresh one
+ * seeded via backfillMonthAccumulator so a period rollover (or first run)
+ * doesn't silently drop already-elapsed days in the period.
+ */
+async function resolveMonthAccumulator(
+  env: Env,
+  previousMonthAccumulator: MonthAccumulator | null,
+  now: Date,
+): Promise<MonthAccumulator> {
+  if (
+    previousMonthAccumulator &&
+    isSameBillingPeriod(new Date(previousMonthAccumulator.lastReadingAt), now)
+  ) {
+    return previousMonthAccumulator;
+  }
+  return backfillMonthAccumulator(env, now);
+}
+
 export interface ComputedStatus {
   status: StatusResponse;
   accumulator: TodayAccumulator;
@@ -116,12 +182,11 @@ export interface ComputedStatus {
 }
 
 /**
- * Orchestrates a full refresh: obtains a Kraken JWT, fetches telemetry since
- * the last known reading, advances the today and this-month accumulators
- * (from the same telemetry fetch — the month accumulator only ever resets
- * on the 20th, which is always also a local-day boundary, so the daily
- * fetch window is always sufficient for it too), and looks up the current
- * rate/demand for the response payload.
+ * Orchestrates a full refresh: obtains a Kraken JWT, resolves the month
+ * accumulator (backfilling from history on a cold start/period rollover),
+ * fetches live telemetry since the last known reading, advances the today
+ * and this-month accumulators from it, and looks up the current rate/demand
+ * for the response payload.
  */
 export async function computeStatus(
   env: Env,
@@ -135,6 +200,8 @@ export async function computeStatus(
   const todayRates = await fetchAgileRatesForDay(env, todayKey);
   const ratesByDay = new Map<string, AgileRate[]>([[todayKey, todayRates]]);
 
+  const resolvedMonthAccumulator = await resolveMonthAccumulator(env, previousMonthAccumulator, now);
+
   // The accumulator resets for a new day (see advanceTodayAccumulator), so
   // whenever it's reused it's always from earlier today; fetchSince is
   // therefore always within today's rates window.
@@ -145,7 +212,7 @@ export async function computeStatus(
 
   const points = await fetchTelemetry(env, jwt, fetchSince, now);
   const accumulator = advanceTodayAccumulator(previousAccumulator, points, ratesByDay, now);
-  const monthAccumulator = advanceMonthAccumulator(previousMonthAccumulator, points, ratesByDay, now);
+  const monthAccumulator = advanceMonthAccumulator(resolvedMonthAccumulator, points, ratesByDay, now);
 
   const latestPoint = points.at(-1);
   const currentDemandKw = latestPoint?.demandKw ?? 0;

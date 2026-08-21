@@ -1,7 +1,13 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchAgileRatesForDay, fetchTelemetry, obtainKrakenJwt } from "../src/octopus";
+import {
+  fetchAgileRatesForDay,
+  fetchHistoricalConsumption,
+  fetchTelemetry,
+  obtainKrakenJwt,
+} from "../src/octopus";
 import type { Env } from "../src/types";
+import consumptionFixture from "./fixtures/consumption.sample.json";
 import ratesFixture from "./fixtures/rates.sample.json";
 import telemetryFixture from "./fixtures/telemetry.sample.json";
 
@@ -24,6 +30,8 @@ beforeEach(async () => {
   testEnv.OCTOPUS_DEVICE_ID = "00-00-00-00-00-00-00-00";
   testEnv.OCTOPUS_PRODUCT_CODE = "AGILE-24-10-01";
   testEnv.OCTOPUS_TARIFF_CODE = "E-1R-AGILE-24-10-01-C";
+  testEnv.OCTOPUS_MPAN = "1234567890123";
+  testEnv.OCTOPUS_METER_SERIAL = "12A3456789";
 });
 
 afterEach(() => {
@@ -166,5 +174,58 @@ describe("fetchAgileRatesForDay", () => {
     );
     expect(url).toContain(encodeURIComponent("2026-01-15T00:00:00.000Z"));
     expect(url).toContain(encodeURIComponent("2026-01-16T00:00:00.000Z"));
+  });
+});
+
+describe("fetchHistoricalConsumption", () => {
+  it("sorts intervals ascending by start time", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(consumptionFixture)));
+
+    const intervals = await fetchHistoricalConsumption(
+      testEnv,
+      new Date("2026-01-14T00:00:00Z"),
+      new Date("2026-01-15T00:00:00Z"),
+    );
+
+    expect(intervals).toEqual([
+      { consumptionKwh: 0.4, intervalStart: "2026-01-14T10:00:00Z" },
+      { consumptionKwh: 0.6, intervalStart: "2026-01-14T10:30:00Z" },
+      { consumptionKwh: 0.5, intervalStart: "2026-01-14T11:00:00Z" },
+    ]);
+  });
+
+  it("authenticates with HTTP Basic Auth using the API key as username", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(consumptionFixture));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchHistoricalConsumption(
+      testEnv,
+      new Date("2026-01-14T00:00:00Z"),
+      new Date("2026-01-15T00:00:00Z"),
+    );
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/electricity-meter-points/1234567890123/meters/12A3456789/consumption/");
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      `Basic ${btoa("sk_test_123:")}`,
+    );
+  });
+
+  it("follows pagination via the next link", async () => {
+    const page1 = { next: "https://api.octopus.energy/v1/next-page", results: consumptionFixture.results };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(page1))
+      .mockResolvedValueOnce(jsonResponse({ next: null, results: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const intervals = await fetchHistoricalConsumption(
+      testEnv,
+      new Date("2026-01-14T00:00:00Z"),
+      new Date("2026-01-15T00:00:00Z"),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(intervals).toHaveLength(3);
   });
 });

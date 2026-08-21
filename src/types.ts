@@ -25,6 +25,12 @@ export interface KrakenJwtCache {
   expiresAt: string;
 }
 
+/** A single historical half-hourly consumption interval from the REST API. */
+export interface ConsumptionInterval {
+  consumptionKwh: number;
+  intervalStart: string;
+}
+
 /** A single live smart-meter telemetry point from the Home Mini. */
 export interface TelemetryPoint {
   readAt: string;

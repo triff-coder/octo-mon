@@ -1,6 +1,6 @@
 import { addDaysToDateKey, londonMidnightUtc } from "./time";
 import { getJson, putJson } from "./cache";
-import type { AgileRate, Env, KrakenJwtCache, TelemetryPoint } from "./types";
+import type { AgileRate, ConsumptionInterval, Env, KrakenJwtCache, TelemetryPoint } from "./types";
 
 const GRAPHQL_ENDPOINT = "https://api.octopus.energy/v1/graphql/";
 const REST_BASE = "https://api.octopus.energy/v1";
@@ -206,4 +206,51 @@ export async function fetchAgileRatesForDay(env: Env, dateKey: string): Promise<
   await putJson(env.OCTOMON_KV, cacheKey, rates, { expirationTtl: 6 * 60 * 60 });
 
   return rates;
+}
+
+interface RawConsumptionEntry {
+  consumption: number;
+  interval_start: string;
+}
+
+interface ConsumptionPage {
+  next: string | null;
+  results: RawConsumptionEntry[];
+}
+
+const MAX_CONSUMPTION_PAGES = 20;
+
+/**
+ * Fetches historical half-hourly consumption between `periodFrom` and
+ * `periodTo` (UTC instants) via the REST consumption endpoint. Unlike live
+ * telemetry, this endpoint requires HTTP Basic Auth (API key as username,
+ * blank password) and lags by some hours, so it's only used to backfill the
+ * "this month" total for already-completed days — never for "current" or
+ * "today", which rely on live GraphQL telemetry.
+ */
+export async function fetchHistoricalConsumption(
+  env: Env,
+  periodFrom: Date,
+  periodTo: Date,
+): Promise<ConsumptionInterval[]> {
+  const authHeader = `Basic ${btoa(`${env.OCTOPUS_API_KEY}:`)}`;
+  const results: RawConsumptionEntry[] = [];
+  let url: string | null =
+    `${REST_BASE}/electricity-meter-points/${env.OCTOPUS_MPAN}/meters/${env.OCTOPUS_METER_SERIAL}` +
+    `/consumption/?period_from=${encodeURIComponent(periodFrom.toISOString())}` +
+    `&period_to=${encodeURIComponent(periodTo.toISOString())}&page_size=1500&order_by=period`;
+
+  for (let page = 0; url && page < MAX_CONSUMPTION_PAGES; page++) {
+    const response: Response = await fetch(url, { headers: { Authorization: authHeader } });
+    if (!response.ok) {
+      throw new Error(`Octopus consumption request failed: HTTP ${response.status}`);
+    }
+    const body = (await response.json()) as ConsumptionPage;
+    results.push(...body.results);
+    url = body.next;
+  }
+
+  return results
+    .map((r) => ({ consumptionKwh: r.consumption, intervalStart: r.interval_start }))
+    .sort((a, b) => new Date(a.intervalStart).getTime() - new Date(b.intervalStart).getTime());
 }

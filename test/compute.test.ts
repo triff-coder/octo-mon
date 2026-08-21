@@ -23,7 +23,10 @@ function jsonResponse(body: unknown): Response {
 
 interface MockApiOptions {
   telemetry?: { readAt: string; demand: string | number; consumptionDelta: string | number }[];
-  rate?: { pencePerKwh: number; validFrom: string; validTo: string };
+  /** Price used for every day's rate window (the window itself is derived from the request). */
+  pencePerKwh?: number;
+  /** Historical consumption intervals returned by the REST consumption endpoint (for backfill). */
+  consumption?: { consumptionKwh: number; intervalStart: string; intervalEnd: string }[];
 }
 
 function mockOctopusApi(opts: MockApiOptions) {
@@ -42,25 +45,36 @@ function mockOctopusApi(opts: MockApiOptions) {
     }
 
     if (url.includes("/standard-unit-rates/")) {
-      const rate = opts.rate ?? {
-        pencePerKwh: 20,
-        validFrom: "2026-01-15T00:00:00Z",
-        validTo: "2026-01-16T00:00:00Z",
-      };
+      // Derive the rate's validity window from the requested period so it
+      // always covers whichever day is actually being priced (today, or a
+      // backfilled earlier day in the billing period).
+      const parsedUrl = new URL(url);
+      const periodFrom = parsedUrl.searchParams.get("period_from") ?? "2026-01-15T00:00:00.000Z";
+      const periodTo = parsedUrl.searchParams.get("period_to") ?? "2026-01-16T00:00:00.000Z";
+      const pencePerKwh = opts.pencePerKwh ?? 20;
       return jsonResponse({
         count: 1,
         next: null,
         previous: null,
         results: [
           {
-            value_exc_vat: rate.pencePerKwh / 1.05,
-            value_inc_vat: rate.pencePerKwh,
-            valid_from: rate.validFrom,
-            valid_to: rate.validTo,
+            value_exc_vat: pencePerKwh / 1.05,
+            value_inc_vat: pencePerKwh,
+            valid_from: periodFrom,
+            valid_to: periodTo,
             payment_method: "DIRECT_DEBIT",
           },
         ],
       });
+    }
+
+    if (url.includes("/consumption/")) {
+      const results = (opts.consumption ?? []).map((c) => ({
+        consumption: c.consumptionKwh,
+        interval_start: c.intervalStart,
+        interval_end: c.intervalEnd,
+      }));
+      return jsonResponse({ count: results.length, next: null, previous: null, results });
     }
 
     throw new Error(`Unexpected fetch: ${url}`);
@@ -76,6 +90,8 @@ beforeEach(async () => {
   testEnv.OCTOPUS_DEVICE_ID = "00-00-00-00-00-00-00-00";
   testEnv.OCTOPUS_PRODUCT_CODE = "AGILE-24-10-01";
   testEnv.OCTOPUS_TARIFF_CODE = "E-1R-AGILE-24-10-01-C";
+  testEnv.OCTOPUS_MPAN = "1234567890123";
+  testEnv.OCTOPUS_METER_SERIAL = "12A3456789";
 });
 
 describe("findRateForInstant", () => {
@@ -248,7 +264,7 @@ describe("computeStatus", () => {
           { readAt: "2026-01-15T10:00:00Z", demand: 1000, consumptionDelta: 1000 },
           { readAt: "2026-01-15T10:05:00Z", demand: 2000, consumptionDelta: 2000 },
         ],
-        rate: { pencePerKwh: 20, validFrom: "2026-01-15T00:00:00Z", validTo: "2026-01-16T00:00:00Z" },
+        pencePerKwh: 20,
       }),
     );
 
@@ -275,7 +291,7 @@ describe("computeStatus", () => {
       "fetch",
       mockOctopusApi({
         telemetry: [{ readAt: "2026-01-15T10:10:00Z", demand: 500, consumptionDelta: 1000 }],
-        rate: { pencePerKwh: 10, validFrom: "2026-01-15T00:00:00Z", validTo: "2026-01-16T00:00:00Z" },
+        pencePerKwh: 10,
       }),
     );
 
@@ -315,7 +331,7 @@ describe("computeStatus", () => {
       "fetch",
       mockOctopusApi({
         telemetry: [{ readAt: "2026-01-20T10:00:00Z", demand: 500, consumptionDelta: 1000 }],
-        rate: { pencePerKwh: 10, validFrom: "2026-01-20T00:00:00Z", validTo: "2026-01-21T00:00:00Z" },
+        pencePerKwh: 10,
       }),
     );
 
@@ -335,6 +351,80 @@ describe("computeStatus", () => {
 
     expect(monthAccumulator.periodKey).toBe("2026-01-20");
     expect(status.thisMonthTotalKwh).toBeCloseTo(1);
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("computeStatus month backfill", () => {
+  it("backfills already-elapsed days in the billing period from historical consumption on a cold start", async () => {
+    // Billing period starts 2025-12-20; "today" is 2026-01-15. The 14th
+    // (an already-completed day within the period, before today) has no
+    // accumulator state yet, so it must come from the consumption endpoint.
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:00:00Z", demand: 500, consumptionDelta: 1000 }],
+        pencePerKwh: 10,
+        consumption: [
+          { consumptionKwh: 2, intervalStart: "2026-01-14T10:00:00Z", intervalEnd: "2026-01-14T10:30:00Z" },
+          { consumptionKwh: 3, intervalStart: "2026-01-14T10:30:00Z", intervalEnd: "2026-01-14T11:00:00Z" },
+        ],
+      }),
+    );
+
+    const { status, monthAccumulator } = await computeStatus(
+      testEnv,
+      null,
+      null,
+      new Date("2026-01-15T10:01:00Z"),
+    );
+
+    // 5 kWh backfilled from the 14th + 1 kWh live from today, all at 10p/kWh.
+    expect(status.thisMonthTotalKwh).toBeCloseTo(6);
+    expect(status.thisMonthTotalCostGbp).toBeCloseTo(0.6);
+    expect(monthAccumulator.periodKey).toBe("2025-12-20");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("does not call the consumption endpoint when the month accumulator is still current", async () => {
+    const fetchMock = mockOctopusApi({
+      telemetry: [{ readAt: "2026-01-15T10:10:00Z", demand: 500, consumptionDelta: 1000 }],
+      pencePerKwh: 10,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const previousMonth: MonthAccumulator = {
+      periodKey: "2025-12-20",
+      kwhSoFar: 40,
+      costGbpSoFar: 4,
+      lastReadingAt: "2026-01-15T10:05:00Z",
+    };
+
+    await computeStatus(testEnv, null, previousMonth, new Date("2026-01-15T10:11:00Z"));
+
+    const consumptionCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("/consumption/"),
+    );
+    expect(consumptionCalls).toHaveLength(0);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("skips the consumption endpoint when the billing period starts today (nothing to backfill)", async () => {
+    const fetchMock = mockOctopusApi({
+      telemetry: [{ readAt: "2026-01-20T10:00:00Z", demand: 500, consumptionDelta: 1000 }],
+      pencePerKwh: 10,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await computeStatus(testEnv, null, null, new Date("2026-01-20T10:01:00Z"));
+
+    const consumptionCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("/consumption/"),
+    );
+    expect(consumptionCalls).toHaveLength(0);
 
     vi.unstubAllGlobals();
   });

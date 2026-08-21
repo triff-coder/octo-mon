@@ -1,0 +1,22 @@
+{
+  "count": 3,
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "consumption": 0.6,
+      "interval_start": "2026-01-14T10:30:00Z",
+      "interval_end": "2026-01-14T11:00:00Z"
+    },
+    {
+      "consumption": 0.4,
+      "interval_start": "2026-01-14T10:00:00Z",
+      "interval_end": "2026-01-14T10:30:00Z"
+    },
+    {
+      "consumption": 0.5,
+      "interval_start": "2026-01-14T11:00:00Z",
+      "interval_end": "2026-01-14T11:30:00Z"
+    }
+  ]
+}

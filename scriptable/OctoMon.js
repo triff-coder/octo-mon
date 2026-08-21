@@ -167,7 +167,7 @@ function buildStatusWidget(status, stale) {
     badge.textColor = new Color("#EF5350");
   }
 
-  widget.addSpacer(6);
+  widget.addSpacer(4);
 
   const currentCostLine = widget.addText(`${formatPounds(status.currentCostPerHourGbp)}/hr`);
   currentCostLine.font = Font.boldSystemFont(22);
@@ -179,30 +179,48 @@ function buildStatusWidget(status, stale) {
   detailLine.font = Font.systemFont(11);
   detailLine.textColor = Color.gray();
 
-  widget.addSpacer(10);
+  widget.addSpacer(8);
 
-  const todayLabel = widget.addText("TODAY");
-  todayLabel.font = Font.mediumSystemFont(10);
-  todayLabel.textColor = Color.gray();
+  if (config.widgetFamily === "small") {
+    const todayLabel = widget.addText("TODAY");
+    todayLabel.font = Font.mediumSystemFont(10);
+    todayLabel.textColor = Color.gray();
 
-  const todayCost = widget.addText(formatPounds(status.todayTotalCostGbp));
-  todayCost.font = Font.boldSystemFont(18);
-  todayCost.textColor = Color.white();
+    const todayCost = widget.addText(formatPounds(status.todayTotalCostGbp));
+    todayCost.font = Font.boldSystemFont(18);
+    todayCost.textColor = Color.white();
+  } else {
+    // Side-by-side columns make far better use of a medium/large widget's
+    // width than stacking today + this-month vertically, which was
+    // overflowing the widget's height and getting clipped at the bottom.
+    const statsRow = widget.addStack();
+    statsRow.layoutHorizontally();
 
-  if (config.widgetFamily !== "small") {
-    const todayKwh = widget.addText(`${status.todayTotalKwh.toFixed(2)} kWh so far`);
-    todayKwh.font = Font.systemFont(11);
+    const todayColumn = statsRow.addStack();
+    todayColumn.layoutVertically();
+    const todayLabel = todayColumn.addText("TODAY");
+    todayLabel.font = Font.mediumSystemFont(10);
+    todayLabel.textColor = Color.gray();
+    const todayCost = todayColumn.addText(formatPounds(status.todayTotalCostGbp));
+    todayCost.font = Font.boldSystemFont(17);
+    todayCost.textColor = Color.white();
+    const todayKwh = todayColumn.addText(`${status.todayTotalKwh.toFixed(2)} kWh`);
+    todayKwh.font = Font.systemFont(9);
     todayKwh.textColor = Color.gray();
 
-    widget.addSpacer(8);
+    statsRow.addSpacer();
 
-    const monthLabel = widget.addText(`THIS MONTH (since ${formatShortDate(status.billingPeriodStart)})`);
+    const monthColumn = statsRow.addStack();
+    monthColumn.layoutVertically();
+    const monthLabel = monthColumn.addText("THIS MONTH");
     monthLabel.font = Font.mediumSystemFont(10);
     monthLabel.textColor = Color.gray();
-
-    const monthCost = widget.addText(formatPounds(status.thisMonthTotalCostGbp));
-    monthCost.font = Font.boldSystemFont(16);
+    const monthCost = monthColumn.addText(formatPounds(status.thisMonthTotalCostGbp));
+    monthCost.font = Font.boldSystemFont(17);
     monthCost.textColor = Color.white();
+    const monthSince = monthColumn.addText(`since ${formatShortDate(status.billingPeriodStart)}`);
+    monthSince.font = Font.systemFont(9);
+    monthSince.textColor = Color.gray();
   }
 
   widget.addSpacer();

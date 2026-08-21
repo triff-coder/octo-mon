@@ -1,0 +1,22 @@
+# Copy this file to `.dev.vars` for local `wrangler dev` testing.
+# Never commit `.dev.vars` — it's already in .gitignore.
+#
+# In production these are set with `wrangler secret put <NAME>`, not with vars.
+
+# Octopus Energy API key (from your account's API access page)
+OCTOPUS_API_KEY=sk_live_xxxxxxxxxxxxxxxxxxxx
+
+# Octopus account number, e.g. A-1234ABCD
+OCTOPUS_ACCOUNT_NUMBER=A-XXXXXXXX
+
+# Electricity meter point MPAN (13 digits)
+OCTOPUS_MPAN=1234567890123
+
+# Electricity meter serial number
+OCTOPUS_METER_SERIAL=12A3456789
+
+# Home Mini device id, found via the `devices` GraphQL query (see README)
+OCTOPUS_DEVICE_ID=00-00-00-00-00-00-00-00
+
+# Shared secret the Scriptable widget must present to call /status
+WIDGET_SHARED_SECRET=change-me-to-a-long-random-string

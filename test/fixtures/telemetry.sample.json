@@ -1,0 +1,9 @@
+{
+  "data": {
+    "smartMeterTelemetry": [
+      { "readAt": "2026-01-15T10:00:00Z", "demand": "842", "consumptionDelta": "2.3" },
+      { "readAt": "2026-01-15T10:00:20Z", "demand": 910, "consumptionDelta": 2.5 },
+      { "readAt": "2026-01-15T10:00:10Z", "demand": "875", "consumptionDelta": "2.4" }
+    ]
+  }
+}

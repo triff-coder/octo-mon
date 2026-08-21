@@ -155,6 +155,12 @@ async function backfillMonthAccumulator(env: Env, now: Date): Promise<MonthAccum
   return { periodKey, kwhSoFar, costGbpSoFar, lastReadingAt: todayStart.toISOString() };
 }
 
+interface ResolvedMonthAccumulator {
+  accumulator: MonthAccumulator;
+  /** Set when backfill was attempted and failed, so the cause is visible in /status rather than only in logs. */
+  backfillError: string | null;
+}
+
 /**
  * Returns the month accumulator to build on for `now`: the existing one if
  * it's still within the current billing period, otherwise a fresh one
@@ -165,28 +171,34 @@ async function backfillMonthAccumulator(env: Env, now: Date): Promise<MonthAccum
  * /status: if the consumption endpoint fails (wrong MPAN/serial, no data
  * yet for a brand-new meter, Octopus outage, ...) this falls back to a
  * zero-balance accumulator starting today, rather than letting the whole
- * request fail.
+ * request fail. The failure reason is still reported back (see
+ * backfillError) so it's diagnosable without dashboard log access.
  */
 async function resolveMonthAccumulator(
   env: Env,
   previousMonthAccumulator: MonthAccumulator | null,
   now: Date,
-): Promise<MonthAccumulator> {
+): Promise<ResolvedMonthAccumulator> {
   if (
     previousMonthAccumulator &&
     isSameBillingPeriod(new Date(previousMonthAccumulator.lastReadingAt), now)
   ) {
-    return previousMonthAccumulator;
+    return { accumulator: previousMonthAccumulator, backfillError: null };
   }
   try {
-    return await backfillMonthAccumulator(env, now);
+    const accumulator = await backfillMonthAccumulator(env, now);
+    return { accumulator, backfillError: null };
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     console.error("octo-mon month backfill failed, starting this month's total from zero:", error);
     return {
-      periodKey: billingPeriodKey(now),
-      kwhSoFar: 0,
-      costGbpSoFar: 0,
-      lastReadingAt: londonMidnightUtc(londonDateKey(now)).toISOString(),
+      accumulator: {
+        periodKey: billingPeriodKey(now),
+        kwhSoFar: 0,
+        costGbpSoFar: 0,
+        lastReadingAt: londonMidnightUtc(londonDateKey(now)).toISOString(),
+      },
+      backfillError: message,
     };
   }
 }
@@ -216,7 +228,11 @@ export async function computeStatus(
   const todayRates = await fetchAgileRatesForDay(env, todayKey);
   const ratesByDay = new Map<string, AgileRate[]>([[todayKey, todayRates]]);
 
-  const resolvedMonthAccumulator = await resolveMonthAccumulator(env, previousMonthAccumulator, now);
+  const { accumulator: resolvedMonthAccumulator, backfillError } = await resolveMonthAccumulator(
+    env,
+    previousMonthAccumulator,
+    now,
+  );
 
   // The accumulator resets for a new day (see advanceTodayAccumulator), so
   // whenever it's reused it's always from earlier today; fetchSince is
@@ -264,6 +280,7 @@ export async function computeStatus(
     thisMonthTotalKwh: monthAccumulator.kwhSoFar,
     thisMonthTotalCostGbp: monthAccumulator.costGbpSoFar,
     billingPeriodStart: monthAccumulator.periodKey,
+    monthBackfillError: backfillError,
     stale: false,
     snapshotAgeSeconds: 0,
   };

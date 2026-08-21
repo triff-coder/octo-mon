@@ -40,6 +40,7 @@ const cachedStatus: StatusResponse = {
   thisMonthTotalKwh: 45,
   thisMonthTotalCostGbp: 9,
   billingPeriodStart: "2025-12-20",
+  monthBackfillError: null,
   stale: false,
   snapshotAgeSeconds: 0,
 };

@@ -74,6 +74,8 @@ export interface StatusResponse {
   thisMonthTotalKwh: number;
   thisMonthTotalCostGbp: number;
   billingPeriodStart: string;
+  /** Set when the month backfill was attempted and failed (falling back to a zero-balance start), null otherwise. */
+  monthBackfillError: string | null;
   stale: boolean;
   snapshotAgeSeconds: number;
 }

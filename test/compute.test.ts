@@ -455,6 +455,25 @@ describe("computeStatus month backfill", () => {
     expect(status.thisMonthTotalKwh).toBeCloseTo(1);
     expect(status.thisMonthTotalCostGbp).toBeCloseTo(0.1);
     expect(monthAccumulator.periodKey).toBe("2025-12-20");
+    // The failure reason is still surfaced in the response rather than only
+    // logged, so it's diagnosable without dashboard log access.
+    expect(status.monthBackfillError).toContain("404");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("reports monthBackfillError as null once a backfill/carry-forward succeeds", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:00:00Z", demand: 500, consumptionDelta: 1000 }],
+        pencePerKwh: 10,
+      }),
+    );
+
+    const { status } = await computeStatus(testEnv, null, null, new Date("2026-01-15T10:01:00Z"));
+
+    expect(status.monthBackfillError).toBeNull();
 
     vi.unstubAllGlobals();
   });
@@ -534,6 +553,7 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       thisMonthTotalKwh: 45,
       thisMonthTotalCostGbp: 9,
       billingPeriodStart: "2025-12-20",
+      monthBackfillError: null,
       stale: false,
       snapshotAgeSeconds: 0,
     };
@@ -565,6 +585,7 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       thisMonthTotalKwh: 45,
       thisMonthTotalCostGbp: 9,
       billingPeriodStart: "2025-12-20",
+      monthBackfillError: null,
       stale: false,
       snapshotAgeSeconds: 0,
     };

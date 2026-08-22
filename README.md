@@ -161,6 +161,25 @@ take a further 7 days to become meaningful (they're 0/absent until then).
 If it's the very first request, the Worker computes live (a bit slower); after
 that, the 5-minute cron keeps a warm snapshot so requests are fast.
 
+### Web dashboard
+
+```
+https://octo-mon.<your-subdomain>.workers.dev/dashboard?token=<your WIDGET_SHARED_SECRET>
+```
+
+A plain browser page showing the same information as the large widget
+(current £/hr, last hour/today/this month, and the 24-hour chart with 7-day
+average marks) — bookmark it, or open it any time you want a reading that's
+more current than the widget. It's not subject to iOS's home-screen widget
+refresh throttling, so instead of the widget's typical 15-20 minute lag, it
+polls `/status` itself every 30 seconds and redraws — in practice it's never
+more than a few minutes stale (bounded by the 5-minute cron, not by iOS).
+
+The `token` query parameter is your `WIDGET_SHARED_SECRET` and gets embedded
+in the returned page so its own polling can re-authenticate — treat this
+URL with the same care as the secret itself (don't share it, don't post it
+publicly).
+
 ### Local development
 
 Copy `.dev.vars.example` to `.dev.vars` and fill in real values, then:

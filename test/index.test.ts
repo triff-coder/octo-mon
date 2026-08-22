@@ -98,6 +98,23 @@ describe("GET /status", () => {
   });
 });
 
+describe("GET /dashboard", () => {
+  it("rejects a request with no token", async () => {
+    const response = await callFetch(new Request("https://example.com/dashboard"));
+    expect(response.status).toBe(401);
+  });
+
+  it("serves an HTML page embedding the provided token for its own polling", async () => {
+    const response = await callFetch(new Request("https://example.com/dashboard?token=test-secret"));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/html");
+    const body = await response.text();
+    expect(body).toContain("<canvas");
+    expect(body).toContain('"test-secret"');
+  });
+});
+
 describe("unknown routes", () => {
   it("returns 404 for other paths", async () => {
     const response = await callFetch(new Request("https://example.com/nope"));

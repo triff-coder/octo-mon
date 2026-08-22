@@ -809,4 +809,38 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
     const persisted = await testEnv.OCTOMON_KV.get("status:latest", "json");
     expect(persisted).not.toBeNull();
   });
+
+  it("getOrComputeStatus(forceRefresh) computes live even with a fresh snapshot cached", async () => {
+    const now = new Date("2026-01-15T10:06:00Z");
+    const cached: StatusResponse = {
+      generatedAt: new Date(now.getTime() - 60_000).toISOString(),
+      currentRate: { pencePerKwh: 20, validFrom: "2026-01-15T10:00:00Z", validTo: "2026-01-15T10:30:00Z" },
+      currentDemandKw: 1,
+      currentCostPerHourGbp: 0.2,
+      todayTotalKwh: 3,
+      todayTotalCostGbp: 0.6,
+      thisMonthTotalKwh: 45,
+      thisMonthTotalCostGbp: 9,
+      billingPeriodStart: "2025-12-20",
+      monthBackfillError: null,
+      lastHourCostGbp: 0.4,
+      hourlyBuckets: [],
+      stale: false,
+      snapshotAgeSeconds: 0,
+    };
+    await testEnv.OCTOMON_KV.put("status:latest", JSON.stringify(cached));
+
+    const fetchMock = mockOctopusApi({
+      telemetry: [{ readAt: "2026-01-15T10:05:00Z", demand: 2500, consumptionDelta: 2500 }],
+      pencePerKwh: 15,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getOrComputeStatus(testEnv, now, true);
+    vi.unstubAllGlobals();
+
+    // Reflects the live telemetry, not the cached snapshot's stale values.
+    expect(result.currentDemandKw).toBe(2.5);
+    expect(fetchMock).toHaveBeenCalled();
+  });
 });

@@ -79,6 +79,64 @@ describe("GET /status", () => {
     expect(response.status).toBe(200);
   });
 
+  it("bypasses a fresh cached snapshot and computes live when ?refresh=true", async () => {
+    await testEnv.OCTOMON_KV.put("status:latest", JSON.stringify(cachedStatus));
+
+    // A permissive rate window (rather than deriving one from the request,
+    // as compute.test.ts's fixture does) keeps this independent of whatever
+    // the real system clock happens to be when the test runs.
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input.toString();
+      const jsonResponse = (body: unknown) =>
+        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+
+      if (url.includes("/graphql/")) {
+        const body = JSON.parse((init?.body as string) ?? "{}") as { query: string };
+        if (body.query.includes("obtainKrakenToken")) {
+          return jsonResponse({ data: { obtainKrakenToken: { token: "jwt-1" } } });
+        }
+        if (body.query.includes("smartMeterTelemetry")) {
+          return jsonResponse({
+            data: {
+              smartMeterTelemetry: [{ readAt: new Date().toISOString(), demand: 3000, consumptionDelta: 3000 }],
+            },
+          });
+        }
+      }
+      if (url.includes("/standard-unit-rates/")) {
+        return jsonResponse({
+          count: 1,
+          next: null,
+          previous: null,
+          results: [
+            {
+              value_exc_vat: 9.52,
+              value_inc_vat: 10,
+              valid_from: "2000-01-01T00:00:00Z",
+              valid_to: "2100-01-01T00:00:00Z",
+              payment_method: "DIRECT_DEBIT",
+            },
+          ],
+        });
+      }
+      if (url.includes("/consumption/")) {
+        return jsonResponse({ count: 0, next: null, previous: null, results: [] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await callFetch(
+      new Request("https://example.com/status?refresh=true", { headers: { "X-Widget-Secret": "test-secret" } }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as StatusResponse;
+    // Reflects the live telemetry (3kW), not the cached snapshot's 1kW.
+    expect(body.currentDemandKw).toBe(3);
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
   it("returns a clean 500 JSON error instead of an unhandled exception when live computation fails", async () => {
     // No cached snapshot, so /status must compute live; simulate Octopus's
     // API being unreachable/erroring for the very first call it makes.

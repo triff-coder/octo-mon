@@ -26,7 +26,8 @@ export default {
         return jsonResponse({ error: "unauthorized" }, 401);
       }
       try {
-        const status = await getOrComputeStatus(env);
+        const forceRefresh = url.searchParams.get("refresh") === "true";
+        const status = await getOrComputeStatus(env, new Date(), forceRefresh);
         return jsonResponse(status, 200);
       } catch (error) {
         console.error("octo-mon /status failed:", error);

@@ -437,11 +437,36 @@ export async function loadHourBuckets(env: Env): Promise<HourBucketsState | null
 }
 
 /**
+ * Computes a fresh status live (same path the cron takes) and persists it,
+ * so it also becomes the new snapshot for the widget's/dashboard's next
+ * cache-hit read rather than being thrown away after this one request.
+ */
+async function refreshStatus(env: Env, now: Date): Promise<StatusResponse> {
+  const previousAccumulator = await loadTodayAccumulator(env);
+  const previousMonthAccumulator = await loadMonthAccumulator(env);
+  const previousHourBuckets = await loadHourBuckets(env);
+  const computed = await computeStatus(env, previousAccumulator, previousMonthAccumulator, previousHourBuckets, now);
+  await persistComputedStatus(env, computed, now);
+  return computed.status;
+}
+
+/**
  * Reads the cached status snapshot for GET /status. If it's missing or has
  * expired (the cron hasn't run recently), falls back to computing live and
- * opportunistically writes the result back to KV.
+ * opportunistically writes the result back to KV. Pass `forceRefresh` to
+ * skip the cache and always compute live — e.g. a manual "refresh" from the
+ * web dashboard, where the user has explicitly chosen to wait a couple of
+ * seconds for a reading no older than the smart meter's own last report.
  */
-export async function getOrComputeStatus(env: Env, now: Date = new Date()): Promise<StatusResponse> {
+export async function getOrComputeStatus(
+  env: Env,
+  now: Date = new Date(),
+  forceRefresh = false,
+): Promise<StatusResponse> {
+  if (forceRefresh) {
+    return refreshStatus(env, now);
+  }
+
   const snapshot = await getJson<StatusResponse>(env.OCTOMON_KV, STATUS_SNAPSHOT_KV_KEY);
   if (snapshot) {
     const ageSeconds = secondsBetween(new Date(snapshot.generatedAt), now);
@@ -452,10 +477,5 @@ export async function getOrComputeStatus(env: Env, now: Date = new Date()): Prom
     };
   }
 
-  const previousAccumulator = await loadTodayAccumulator(env);
-  const previousMonthAccumulator = await loadMonthAccumulator(env);
-  const previousHourBuckets = await loadHourBuckets(env);
-  const computed = await computeStatus(env, previousAccumulator, previousMonthAccumulator, previousHourBuckets, now);
-  await persistComputedStatus(env, computed, now);
-  return computed.status;
+  return refreshStatus(env, now);
 }

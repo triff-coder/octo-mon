@@ -171,9 +171,15 @@ A plain browser page showing the same information as the large widget
 (current £/hr, last hour/today/this month, and the 24-hour chart with 7-day
 average marks) — bookmark it, or open it any time you want a reading that's
 more current than the widget. It's not subject to iOS's home-screen widget
-refresh throttling, so instead of the widget's typical 15-20 minute lag, it
-polls `/status` itself every 30 seconds and redraws — in practice it's never
-more than a few minutes stale (bounded by the 5-minute cron, not by iOS).
+refresh throttling: every 30 seconds (and on every page load/reload) it calls
+`/status?refresh=true`, which skips the cached snapshot and fetches live from
+Octopus — so what you see is never older than your Home Mini's own last
+report, not bounded by the 5-minute cron either. That costs a bit of latency
+per request (typically well under a second, since the Kraken auth token and
+the day's Agile rates are both already cached — only the telemetry reading
+itself is fetched fresh each time) in exchange for accuracy. Octopus doesn't
+publish a hard rate limit for this API, and a single lightweight request
+every 30 seconds from one personal script is well within normal use.
 
 The `token` query parameter is your `WIDGET_SHARED_SECRET` and gets embedded
 in the returned page so its own polling can re-authenticate — treat this

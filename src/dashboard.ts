@@ -2,10 +2,14 @@
  * A browser-facing view of the same data as the large Scriptable widget —
  * current cost, last hour / today / this month, and the 24-hour chart with
  * 7-day-average marks — but not subject to iOS's home-screen widget refresh
- * throttling. The page polls GET /status itself every 30s, so it stays
- * roughly as fresh as the 5-minute cron snapshot rather than the ~15-20
- * minutes typical for the widget.
+ * throttling. The page polls GET /status?refresh=true itself every 30s,
+ * which forces a live Octopus fetch rather than reading the cron's cached
+ * snapshot — a few hundred ms to a couple of seconds slower per request,
+ * traded for a reading that's never older than the smart meter's own last
+ * report (a browser reload, or just waiting for the next 30s tick, gets you
+ * live data on demand rather than waiting on the 5-minute cron).
  *
+
  * `token` is the already-authenticated shared secret for this request (the
  * same one that authorized loading this page), embedded so the page's own
  * client-side polling can call /status without prompting for it again. This
@@ -194,7 +198,7 @@ export function renderDashboardHtml(token: string): string {
   }
 
   function poll() {
-    fetch("/status?token=" + encodeURIComponent(TOKEN))
+    fetch("/status?refresh=true&token=" + encodeURIComponent(TOKEN))
       .then(function (response) {
         if (!response.ok) throw new Error("Worker returned HTTP " + response.status);
         return response.json();

@@ -4,8 +4,8 @@
 // One-time setup:
 //   1. Paste this whole file into a new Scriptable script (name it "OctoMon").
 //   2. Run it once by tapping it in the Scriptable app (not as a widget) —
-//      it'll prompt for your Worker URL and shared secret and store them in
-//      the iOS Keychain. Re-run it anytime in-app to view/change them.
+//      it'll prompt for your Worker URL and shared secret and save them
+//      locally. Re-run it anytime in-app to view/change them.
 //   3. Long-press your home screen -> add a Scriptable widget -> pick this
 //      script.
 //
@@ -24,9 +24,10 @@ const AUTO_UPDATE_MARKER = "@octomon-widget";
 const REQUEST_TIMEOUT_SECONDS = 8;
 const REFRESH_INTERVAL_MINUTES = 20;
 
-const KEYCHAIN_WORKER_URL_KEY = "octomon_worker_url";
-const KEYCHAIN_SHARED_SECRET_KEY = "octomon_shared_secret";
-
+const CONFIG_PATH = FileManager.local().joinPath(
+  FileManager.local().documentsDirectory(),
+  "octomon-config.json",
+);
 const CACHE_PATH = FileManager.local().joinPath(
   FileManager.local().documentsDirectory(),
   "octomon-status-cache.json",
@@ -53,17 +54,31 @@ async function selfUpdateIfNeeded() {
   }
 }
 
-// Reads the Worker URL + shared secret from Keychain. If they're missing
-// and we're running interactively in-app (not as a widget), prompts for
-// them and saves to Keychain. Widgets can't show prompts, so a widget with
-// no saved config throws and the caller shows a setup-needed message.
+function loadSavedConfig() {
+  const fm = FileManager.local();
+  if (!fm.fileExists(CONFIG_PATH)) return null;
+  try {
+    return JSON.parse(fm.readString(CONFIG_PATH));
+  } catch (error) {
+    return null;
+  }
+}
+
+function saveConfig(workerUrl, sharedSecret) {
+  FileManager.local().writeString(CONFIG_PATH, JSON.stringify({ workerUrl, sharedSecret }));
+}
+
+// Reads the Worker URL + shared secret from local storage (a JSON file
+// alongside the status cache — deliberately not the iOS Keychain, which in
+// practice isn't reliably readable from a Scriptable widget's own process
+// even after being set from the app). If they're missing and we're running
+// interactively in-app (not as a widget), prompts for them and saves.
+// Widgets can't show prompts, so a widget with no saved config throws and
+// the caller shows a setup-needed message.
 async function getConfig() {
-  let workerUrl = Keychain.contains(KEYCHAIN_WORKER_URL_KEY)
-    ? Keychain.get(KEYCHAIN_WORKER_URL_KEY)
-    : null;
-  let sharedSecret = Keychain.contains(KEYCHAIN_SHARED_SECRET_KEY)
-    ? Keychain.get(KEYCHAIN_SHARED_SECRET_KEY)
-    : null;
+  const saved = loadSavedConfig();
+  let workerUrl = saved?.workerUrl ?? null;
+  let sharedSecret = saved?.sharedSecret ?? null;
 
   const needsSetup = !workerUrl || !sharedSecret;
 
@@ -74,8 +89,7 @@ async function getConfig() {
   if (needsSetup || !config.runsInWidget) {
     const alert = new Alert();
     alert.title = "OctoMon Setup";
-    alert.message =
-      "Enter your Worker URL and shared secret (see the octo-mon README). Stored in the iOS Keychain, not in this script.";
+    alert.message = "Enter your Worker URL and shared secret (see the octo-mon README).";
     alert.addTextField("Worker URL", workerUrl || "https://octo-mon.YOUR-SUBDOMAIN.workers.dev/status");
     alert.addSecureTextField("Shared secret", sharedSecret || "");
     alert.addAction("Save");
@@ -88,8 +102,7 @@ async function getConfig() {
     } else {
       workerUrl = alert.textFieldValue(0).trim();
       sharedSecret = alert.textFieldValue(1).trim();
-      Keychain.set(KEYCHAIN_WORKER_URL_KEY, workerUrl);
-      Keychain.set(KEYCHAIN_SHARED_SECRET_KEY, sharedSecret);
+      saveConfig(workerUrl, sharedSecret);
     }
   }
 

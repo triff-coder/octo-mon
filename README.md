@@ -157,8 +157,10 @@ npm test
    the only time you'll paste it in — see "Staying up to date" below.
 3. Run the script once by tapping it in the app (not as a widget yet). It'll
    prompt for your Worker URL (`https://octo-mon.<your-subdomain>.workers.dev/status`)
-   and your `WIDGET_SHARED_SECRET`, then store them in the iOS Keychain —
-   not in the script file itself.
+   and your `WIDGET_SHARED_SECRET`, then save them locally alongside the
+   status cache — not in the script file itself. (Earlier versions used the
+   iOS Keychain for this, but it turned out not to be reliably readable from
+   a widget's own process, only from the app — hence the plain local file.)
 4. Long-press your home screen → **+** → search **Scriptable** → add a widget,
    choose the small or medium size, then edit the widget and select the
    OctoMon script.
@@ -173,8 +175,8 @@ shows a "STALE" badge with the time it's stale since, rather than going blank.
 The script checks `scriptable/OctoMon.js` on the repo's `main` branch each
 time it runs and silently updates its own copy if it's changed (the update
 takes effect on the *next* refresh, not immediately). Your Worker URL and
-secret live in Keychain, not in the script text, so an update never
-overwrites them. To edit those values later, just open and run OctoMon in
+secret live in a separate local config file, not in the script text, so an
+update never overwrites them. To edit those values later, just open and run OctoMon in
 the app again — it'll show the same setup prompt, pre-filled, for you to
 change and re-save. Set `AUTO_UPDATE_ENABLED = false` at the top of the
 script if you'd rather pin it to whatever version is currently installed.

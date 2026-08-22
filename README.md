@@ -8,8 +8,10 @@ An iPhone home-screen widget (built with [Scriptable](https://scriptable.app/)) 
 - **Today's total**: running spend so far today, in £
 - **This month's total**: running spend since the start of the current Octopus
   billing period (the 20th of each month), in £
-- **24-hour chart** (large widget only): a mini bar chart of spend per hour
-  over the last 24 complete hours
+- **24-hour chart** (medium and large widgets): a bar chart of spend per hour
+  over the last 24 complete hours, with a small mark on each bar showing what
+  that hour-of-day has cost on average over the preceding week — so you can
+  see at a glance whether right now is running above or below usual
 
 A small [Cloudflare Worker](https://workers.cloudflare.com/) sits in between the
 widget and Octopus: it holds your Octopus credentials as secrets, polls Octopus
@@ -125,8 +127,8 @@ You should get back JSON like:
   "monthBackfillError": null,
   "lastHourCostGbp": 0.21,
   "hourlyBuckets": [
-    { "hourStart": "2026-08-20T15:00:00.000Z", "costGbp": 0.18 },
-    { "hourStart": "2026-08-20T16:00:00.000Z", "costGbp": 0.24 }
+    { "hourStart": "2026-08-20T15:00:00.000Z", "costGbp": 0.18, "weeklyAvgCostGbp": 0.22 },
+    { "hourStart": "2026-08-20T16:00:00.000Z", "costGbp": 0.24, "weeklyAvgCostGbp": 0.19 }
   ],
   "stale": false,
   "snapshotAgeSeconds": 42
@@ -148,10 +150,13 @@ data for (e.g. before a Home Mini was installed) simply contributes zero.
 UTC clock hour (the sample above is truncated for brevity) — the current,
 still-in-progress hour is deliberately excluded so the chart never shows a
 misleadingly short final bar. `lastHourCostGbp` is that array's last entry.
-Unlike the month total, hour buckets are built purely from live telemetry
-going forward, with no historical backfill, so the chart fills in gradually
-over the first 24 hours after this feature starts running (earlier hours
-just show £0.00 until then).
+`weeklyAvgCostGbp` on each entry is the average cost of that same hour-of-day
+(e.g. "15:00 UTC") over however many of the preceding 7 days actually have
+data (0 until at least one has landed). Unlike the month total, hour buckets
+are built purely from live telemetry going forward, with no historical
+backfill, so both the hourly chart and the weekly averages fill in gradually
+— the chart takes 24 hours to fully populate, and the weekly-average marks
+take a further 7 days to become meaningful (they're 0/absent until then).
 
 If it's the very first request, the Worker computes live (a bit slower); after
 that, the 5-minute cron keeps a warm snapshot so requests are fast.
@@ -181,13 +186,17 @@ npm test
    a widget's own process, only from the app — hence the plain local file.)
 4. Long-press your home screen → **+** → search **Scriptable** → add a widget,
    choose small, medium, or large, then edit the widget and select the
-   OctoMon script. Pick large if you want the 24-hour chart — it needs the
-   extra height, so smaller sizes skip it.
+   OctoMon script. Medium and large both show the 24-hour chart (medium as a
+   miniature next to the current-usage numbers, large full-width); small
+   sticks to just current £/hr and today's total — there's no room for more.
 
 The widget shows current £/hr (colour-coded by rate band) and today's running
 total on every size. Medium and large widgets add last hour's cost and this
-month's running total as extra columns; large widgets also add a mini bar
-chart of the last 24 hours' spend underneath. If the Worker is briefly
+month's running total as extra columns, plus a 24-hour bar chart — medium
+fits a miniature version next to the current-usage numbers, large gets a
+full-width one underneath the stats row. Each bar also carries a small mark
+at that hour-of-day's 7-day average, so you can see whether the current hour
+is running above or below what's typical. If the Worker is briefly
 unreachable, it falls back to the last successfully fetched data and shows a
 "STALE" badge with the time it's stale since, rather than going blank.
 

@@ -25,10 +25,12 @@ const STATUS_SNAPSHOT_TTL_SECONDS = 30 * 60;
 const TODAY_ACCUMULATOR_KV_KEY = "today:accumulator";
 const MONTH_ACCUMULATOR_KV_KEY = "month:accumulator";
 const HOUR_BUCKETS_KV_KEY = "hours:buckets";
-const HOUR_BUCKETS_TTL_SECONDS = 26 * 60 * 60;
-// Buckets older than this are dropped each tick — a day's worth of margin
-// beyond the 24 complete hours the widget actually charts.
-const HOUR_BUCKET_RETENTION_HOURS = 25;
+// Retention needs to reach back far enough to compute a 7-day trailing
+// average for the *oldest* of the 24 charted hours (24h window + 7 * 24h of
+// history for that hour-of-day), plus a small buffer for the fact `now`
+// isn't exactly on an hour boundary.
+const HOUR_BUCKET_RETENTION_HOURS = 24 + 7 * 24 + 1;
+const HOUR_BUCKETS_TTL_SECONDS = (HOUR_BUCKET_RETENTION_HOURS + 6) * 60 * 60;
 // A cached snapshot older than this (roughly 3 missed 5-minute cron ticks)
 // is flagged stale rather than presented as current.
 const STALE_THRESHOLD_SECONDS = 15 * 60;
@@ -171,6 +173,8 @@ export function advanceHourBuckets(
   return st;
 }
 
+const WEEKLY_AVERAGE_SAMPLE_DAYS = 7;
+
 /**
  * Normalizes hour-bucket state into exactly 24 entries, oldest first,
  * covering the last 24 *complete* UTC clock hours (never the current
@@ -178,18 +182,40 @@ export function advanceHourBuckets(
  * bar). Hours with no bucket yet (e.g. before this feature started
  * accumulating, or a gap) report £0.00 rather than being omitted, so the
  * chart always has exactly 24 bars.
+ *
+ * Each entry also carries `weeklyAvgCostGbp`: the average cost of that same
+ * hour-of-day (e.g. "14:00 UTC") over up to the preceding 7 days, averaged
+ * over however many of those days actually have data (0 if none yet) — lets
+ * the widget plot "this hour vs. what this hour usually costs".
  */
 export function buildHourlyBuckets(
   state: HourBucketsState,
   now: Date,
-): { hourStart: string; costGbp: number }[] {
+): { hourStart: string; costGbp: number; weeklyAvgCostGbp: number }[] {
   const currentHourStartMs = hourStartUtc(now).getTime();
-  const result: { hourStart: string; costGbp: number }[] = [];
+  const bucketByStart = new Map(state.buckets.map((b) => [b.hourStart, b]));
+  const result: { hourStart: string; costGbp: number; weeklyAvgCostGbp: number }[] = [];
 
   for (let i = 24; i >= 1; i--) {
-    const hourStartIso = new Date(currentHourStartMs - i * 3_600_000).toISOString();
-    const bucket = state.buckets.find((b) => b.hourStart === hourStartIso);
-    result.push({ hourStart: hourStartIso, costGbp: bucket?.costGbpSoFar ?? 0 });
+    const hourStartMs = currentHourStartMs - i * 3_600_000;
+    const hourStartIso = new Date(hourStartMs).toISOString();
+    const bucket = bucketByStart.get(hourStartIso);
+
+    let weeklySum = 0;
+    let weeklyCount = 0;
+    for (let day = 1; day <= WEEKLY_AVERAGE_SAMPLE_DAYS; day++) {
+      const pastBucket = bucketByStart.get(new Date(hourStartMs - day * 24 * 3_600_000).toISOString());
+      if (pastBucket) {
+        weeklySum += pastBucket.costGbpSoFar;
+        weeklyCount += 1;
+      }
+    }
+
+    result.push({
+      hourStart: hourStartIso,
+      costGbp: bucket?.costGbpSoFar ?? 0,
+      weeklyAvgCostGbp: weeklyCount > 0 ? weeklySum / weeklyCount : 0,
+    });
   }
 
   return result;

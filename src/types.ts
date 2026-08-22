@@ -98,12 +98,14 @@ export interface StatusResponse {
   /** Cost of the most recently completed UTC clock hour (not the current in-progress one). */
   lastHourCostGbp: number;
   /**
-   * The last 24 complete UTC clock hours, oldest first, each an ISO hour
-   * start + its cost. Built purely from live telemetry (no backfill), so it
-   * fills in gradually over the first 24 hours after this feature first
-   * runs — hours before that show £0.00 rather than missing data.
+   * The last 24 complete UTC clock hours, oldest first. Built purely from
+   * live telemetry (no backfill), so it fills in gradually over the first
+   * 24 hours after this feature first runs — hours before that show £0.00
+   * rather than missing data. `weeklyAvgCostGbp` is the average cost of
+   * that same hour-of-day over the preceding up-to-7 days (0 until enough
+   * history has accumulated), for an at-a-glance "vs. usual" comparison.
    */
-  hourlyBuckets: { hourStart: string; costGbp: number }[];
+  hourlyBuckets: { hourStart: string; costGbp: number; weeklyAvgCostGbp: number }[];
   stale: boolean;
   snapshotAgeSeconds: number;
 }

@@ -157,28 +157,48 @@ function colorForRate(pencePerKwh) {
   return new Color("#EF5350");
 }
 
-// Renders a simple 24-bar chart (bar height proportional to that hour's cost
-// vs. the most expensive hour in the window) as an image for addImage() —
-// ListWidget has no native chart element. Large widget only: it's the only
-// size with enough spare vertical room for the bars to stay legible.
+// Renders a 24-bar chart (bar height proportional to that hour's cost vs.
+// the most expensive hour/weekly-average in the window) as an image for
+// addImage() — ListWidget has no native chart element. Each bar also gets a
+// short horizontal mark at the height of that hour-of-day's 7-day average
+// (when there's enough history for one), so today's real-time shape can be
+// compared at a glance against what that hour usually costs.
 function buildHourlyChartImage(buckets, width, height) {
   const dc = new DrawContext();
   dc.size = new Size(width, height);
   dc.opaque = false;
   dc.respectScreenScale = true;
 
-  const maxCost = Math.max(...buckets.map((b) => b.costGbp), 0.01);
-  const gap = 2;
+  const maxCost = Math.max(
+    ...buckets.map((b) => b.costGbp),
+    ...buckets.map((b) => b.weeklyAvgCostGbp || 0),
+    0.01,
+  );
+  const gap = Math.max(1, width / buckets.length / 8);
   const barWidth = (width - gap * (buckets.length - 1)) / buckets.length;
   const barColor = new Color("#4FC3F7");
+  const avgMarkColor = new Color("#FFFFFF", 0.9);
+  const avgMarkHeight = Math.max(1, Math.round(height / 40));
 
   buckets.forEach((bucket, i) => {
+    const x = i * (barWidth + gap);
+
     const barHeight = Math.max(2, (bucket.costGbp / maxCost) * height);
-    const path = new Path();
-    path.addRoundedRect(new Rect(i * (barWidth + gap), height - barHeight, barWidth, barHeight), 1, 1);
-    dc.addPath(path);
+    const barPath = new Path();
+    barPath.addRoundedRect(new Rect(x, height - barHeight, barWidth, barHeight), 1, 1);
+    dc.addPath(barPath);
     dc.setFillColor(barColor);
     dc.fillPath();
+
+    if (bucket.weeklyAvgCostGbp > 0) {
+      const markCenterY = height - (bucket.weeklyAvgCostGbp / maxCost) * height;
+      const markY = Math.min(height - avgMarkHeight, Math.max(0, markCenterY - avgMarkHeight / 2));
+      const markPath = new Path();
+      markPath.addRect(new Rect(x, markY, barWidth, avgMarkHeight));
+      dc.addPath(markPath);
+      dc.setFillColor(avgMarkColor);
+      dc.fillPath();
+    }
   });
 
   return dc.getImage();
@@ -203,15 +223,42 @@ function buildStatusWidget(status, stale) {
 
   widget.addSpacer(4);
 
-  const currentCostLine = widget.addText(`${formatPounds(status.currentCostPerHourGbp)}/hr`);
-  currentCostLine.font = Font.boldSystemFont(22);
-  currentCostLine.textColor = colorForRate(status.currentRate.pencePerKwh);
+  const hourlyBuckets = Array.isArray(status.hourlyBuckets) ? status.hourlyBuckets : [];
 
-  const detailLine = widget.addText(
-    `${status.currentDemandKw.toFixed(2)} kW @ ${formatPence(status.currentRate.pencePerKwh)}/kWh`,
-  );
-  detailLine.font = Font.systemFont(11);
-  detailLine.textColor = Color.gray();
+  const addCurrentUsageLines = (container) => {
+    const currentCostLine = container.addText(`${formatPounds(status.currentCostPerHourGbp)}/hr`);
+    currentCostLine.font = Font.boldSystemFont(22);
+    currentCostLine.textColor = colorForRate(status.currentRate.pencePerKwh);
+
+    const detailLine = container.addText(
+      `${status.currentDemandKw.toFixed(2)} kW @ ${formatPence(status.currentRate.pencePerKwh)}/kWh`,
+    );
+    detailLine.font = Font.systemFont(11);
+    detailLine.textColor = Color.gray();
+  };
+
+  if (config.widgetFamily === "medium" && hourlyBuckets.length > 0) {
+    // Medium doesn't have room for a full-width chart below the stats row
+    // (that's what large size is for), but there's spare width up top next
+    // to the current-usage numbers — a miniature chart fits nicely there.
+    const topRow = widget.addStack();
+    topRow.layoutHorizontally();
+    topRow.centerAlignContent();
+
+    const usageColumn = topRow.addStack();
+    usageColumn.layoutVertically();
+    addCurrentUsageLines(usageColumn);
+
+    topRow.addSpacer();
+
+    const miniChartWidth = 120;
+    const miniChartHeight = 46;
+    const miniChartImage = buildHourlyChartImage(hourlyBuckets, miniChartWidth, miniChartHeight);
+    const miniChartStack = topRow.addImage(miniChartImage);
+    miniChartStack.imageSize = new Size(miniChartWidth, miniChartHeight);
+  } else {
+    addCurrentUsageLines(widget);
+  }
 
   widget.addSpacer(8);
 
@@ -248,11 +295,10 @@ function buildStatusWidget(status, stale) {
     statsRow.addSpacer();
     addStatColumn("THIS MONTH", formatPounds(status.thisMonthTotalCostGbp));
 
-    const hourlyBuckets = Array.isArray(status.hourlyBuckets) ? status.hourlyBuckets : [];
     if (config.widgetFamily === "large" && hourlyBuckets.length > 0) {
       widget.addSpacer(10);
 
-      const chartLabel = widget.addText("LAST 24 HOURS");
+      const chartLabel = widget.addText("LAST 24 HOURS · mark = 7-day avg");
       chartLabel.font = Font.mediumSystemFont(10);
       chartLabel.textColor = Color.gray();
       widget.addSpacer(4);

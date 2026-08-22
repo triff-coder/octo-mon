@@ -328,10 +328,10 @@ describe("advanceHourBuckets", () => {
     expect(existing).toEqual(frozenCopy);
   });
 
-  it("ages out buckets older than the retention window instead of growing forever", () => {
+  it("ages out buckets older than the retention window (~8 days) instead of growing forever", () => {
     const existing: HourBucketsState = {
-      buckets: [{ hourStart: "2026-01-10T10:00:00.000Z", kwhSoFar: 5, costGbpSoFar: 1 }],
-      lastReadingAt: "2026-01-10T10:15:00Z",
+      buckets: [{ hourStart: "2026-01-01T10:00:00.000Z", kwhSoFar: 5, costGbpSoFar: 1 }], // 14 days old
+      lastReadingAt: "2026-01-01T10:15:00Z",
     };
 
     const state = advanceHourBuckets(
@@ -341,7 +341,23 @@ describe("advanceHourBuckets", () => {
       now,
     );
 
-    expect(state.buckets.find((b) => b.hourStart === "2026-01-10T10:00:00.000Z")).toBeUndefined();
+    expect(state.buckets.find((b) => b.hourStart === "2026-01-01T10:00:00.000Z")).toBeUndefined();
+  });
+
+  it("keeps a bucket from a week ago, since the weekly average needs it", () => {
+    const existing: HourBucketsState = {
+      buckets: [{ hourStart: "2026-01-08T10:00:00.000Z", kwhSoFar: 5, costGbpSoFar: 1 }], // 7 days old
+      lastReadingAt: "2026-01-08T10:15:00Z",
+    };
+
+    const state = advanceHourBuckets(
+      existing,
+      [{ readAt: "2026-01-15T10:15:00Z", consumptionDeltaKwh: 1 }],
+      ratesByDay,
+      now,
+    );
+
+    expect(state.buckets.find((b) => b.hourStart === "2026-01-08T10:00:00.000Z")).toBeDefined();
   });
 });
 
@@ -374,6 +390,29 @@ describe("buildHourlyBuckets", () => {
 
     expect(buckets).toHaveLength(24);
     expect(buckets.every((b) => b.costGbp === 0)).toBe(true);
+    expect(buckets.every((b) => b.weeklyAvgCostGbp === 0)).toBe(true);
+  });
+
+  it("averages the same hour-of-day across however many of the last 7 days have data", () => {
+    const now = new Date("2026-01-15T11:30:00Z");
+    const targetHour = "2026-01-15T10:00:00.000Z"; // the most recent complete hour
+    const state: HourBucketsState = {
+      buckets: [
+        { hourStart: targetHour, kwhSoFar: 1, costGbpSoFar: 0.5 },
+        // Same hour-of-day, 1 and 2 days back — averaged into weeklyAvgCostGbp.
+        { hourStart: "2026-01-14T10:00:00.000Z", kwhSoFar: 1, costGbpSoFar: 0.3 },
+        { hourStart: "2026-01-13T10:00:00.000Z", kwhSoFar: 1, costGbpSoFar: 0.1 },
+        // A different hour-of-day on a past day must not be pulled in.
+        { hourStart: "2026-01-12T15:00:00.000Z", kwhSoFar: 1, costGbpSoFar: 99 },
+      ],
+      lastReadingAt: "2026-01-15T11:15:00Z",
+    };
+
+    const buckets = buildHourlyBuckets(state, now);
+    const target = buckets.find((b) => b.hourStart === targetHour);
+
+    expect(target?.costGbp).toBeCloseTo(0.5);
+    expect(target?.weeklyAvgCostGbp).toBeCloseTo((0.3 + 0.1) / 2);
   });
 });
 

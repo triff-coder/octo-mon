@@ -22,7 +22,9 @@ const AUTO_UPDATE_TIMEOUT_SECONDS = 5;
 const AUTO_UPDATE_MARKER = "@octomon-widget";
 
 const REQUEST_TIMEOUT_SECONDS = 8;
-const REFRESH_INTERVAL_MINUTES = 20;
+// iOS throttles home-screen widget refreshes for battery regardless of what
+// we request here — this is roughly the practical floor, not a guarantee.
+const REFRESH_INTERVAL_MINUTES = 15;
 
 const CONFIG_PATH = FileManager.local().joinPath(
   FileManager.local().documentsDirectory(),

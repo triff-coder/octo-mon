@@ -170,6 +170,15 @@ total, and (medium size only) this month's running total. If the Worker is
 briefly unreachable, it falls back to the last successfully fetched data and
 shows a "STALE" badge with the time it's stale since, rather than going blank.
 
+**On refresh frequency:** the Worker itself refreshes every 5 minutes, but
+the widget won't visibly update that often. iOS throttles home-screen widget
+refreshes for battery life, independent of any app's own code — this is a
+platform limit, not something this project can work around. In practice
+expect updates roughly every 15–20 minutes, sometimes longer if you haven't
+looked at the widget in a while (iOS budgets refreshes partly based on how
+often you actually check it). For an instant, on-demand reading, open the
+OctoMon script in Scriptable and run it directly — that always fetches live.
+
 ### Staying up to date
 
 The script checks `scriptable/OctoMon.js` on the repo's `main` branch each

@@ -538,6 +538,51 @@ describe("computeStatus", () => {
 
     vi.unstubAllGlobals();
   });
+
+  it("caps a cold start's telemetry fetch window instead of requesting since local midnight", async () => {
+    // Kraken's smartMeterTelemetry silently returns zero results for an
+    // overly wide TEN_SECONDS-grouped window rather than erroring, so a
+    // cold start late in the day (no previous accumulator) must not
+    // request "since midnight" — that's ~22 hours here.
+    const fetchMock = mockOctopusApi({
+      telemetry: [{ readAt: "2026-01-15T21:55:00Z", demand: 500, consumptionDelta: 1000 }],
+      pencePerKwh: 10,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const now = new Date("2026-01-15T22:00:00Z"); // 22 hours past local midnight
+    await computeStatus(testEnv, null, null, null, now);
+
+    const telemetryCall = fetchMock.mock.calls.find(([, init]) =>
+      JSON.parse((init?.body as string) ?? "{}").query?.includes("smartMeterTelemetry"),
+    ) as [string, RequestInit];
+    const variables = JSON.parse(telemetryCall[1].body as string).variables as { start: string; end: string };
+
+    // Capped to 6 hours back from `now`, not all the way to midnight.
+    expect(variables.start).toBe("2026-01-15T16:00:00.000Z");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("does not cap the fetch window earlier than local midnight itself", async () => {
+    const fetchMock = mockOctopusApi({
+      telemetry: [{ readAt: "2026-01-15T02:00:00Z", demand: 500, consumptionDelta: 1000 }],
+      pencePerKwh: 10,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const now = new Date("2026-01-15T02:30:00Z"); // 2.5 hours past local midnight — well under the 6h cap
+    await computeStatus(testEnv, null, null, null, now);
+
+    const telemetryCall = fetchMock.mock.calls.find(([, init]) =>
+      JSON.parse((init?.body as string) ?? "{}").query?.includes("smartMeterTelemetry"),
+    ) as [string, RequestInit];
+    const variables = JSON.parse(telemetryCall[1].body as string).variables as { start: string; end: string };
+
+    expect(variables.start).toBe("2026-01-15T00:00:00.000Z");
+
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("computeStatus nextAgileSlots", () => {

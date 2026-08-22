@@ -44,6 +44,10 @@ const STALE_THRESHOLD_SECONDS = 15 * 60;
 // 3 hours' worth of half-hourly slots — enough for both the widget's and
 // dashboard's "NEXT AGILE" lists to slice down to whatever they can fit.
 const UPCOMING_RATE_COUNT = 6;
+// Widest telemetry window a cold start will ever request — comfortably
+// under the point where Kraken's smartMeterTelemetry silently starts
+// returning nothing (see the fetchSince comment in computeStatus).
+const MAX_TELEMETRY_FETCH_HOURS = 6;
 
 /** Finds the Agile rate whose validity window contains `instant`. */
 export function findRateForInstant(rates: AgileRate[], instant: Date): AgileRate | null {
@@ -411,10 +415,24 @@ export async function computeStatus(
   // The accumulator resets for a new day (see advanceTodayAccumulator), so
   // whenever it's reused it's always from earlier today; fetchSince is
   // therefore always within today's rates window.
+  //
+  // On a cold start (no accumulator — first deploy, a KV reset, crash
+  // recovery), falling back to "since local midnight" is unsafe: Kraken's
+  // smartMeterTelemetry silently returns zero results (no error) once a
+  // TEN_SECONDS-grouped window gets too wide — empirically somewhere north
+  // of ~16 hours' worth of readings. That leaves the accumulator's
+  // lastReadingAt stuck, so every later tick repeats the same too-wide
+  // query forever, showing £0 indefinitely instead of just today's total
+  // under-reporting (today's total already isn't backfilled on a cold
+  // start regardless — see the README — so bounding this window only
+  // changes how far back a fresh start reaches, not what it reconstructs).
+  const cappedMidnightFallback = new Date(
+    Math.max(londonMidnightUtc(todayKey).getTime(), now.getTime() - MAX_TELEMETRY_FETCH_HOURS * 3_600_000),
+  );
   const fetchSince =
     previousAccumulator && isSameLondonDay(new Date(previousAccumulator.lastReadingAt), now)
       ? new Date(previousAccumulator.lastReadingAt)
-      : londonMidnightUtc(todayKey);
+      : cappedMidnightFallback;
 
   const points = await fetchTelemetry(env, jwt, fetchSince, now);
   const accumulator = advanceTodayAccumulator(previousAccumulator, points, ratesByDay, now);

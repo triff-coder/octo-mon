@@ -286,5 +286,14 @@ script if you'd rather pin it to whatever version is currently installed.
   isn't formally versioned public API — if telemetry stops working, check
   https://developer.octopus.energy/ for schema changes and adjust
   `src/octopus.ts` accordingly.
+- `smartMeterTelemetry` silently returns zero results (no error) for an
+  overly wide `TEN_SECONDS`-grouped time window — empirically somewhere
+  north of ~16 hours' worth of readings on this account, likely an
+  undocumented result cap rather than a real "no data" answer. A cold start
+  (first deploy, a KV reset, crash recovery) caps its telemetry fetch to the
+  last 6 hours rather than "since local midnight" to stay well clear of
+  this — see the `fetchSince` comment in `src/compute.ts`. If demand/cost
+  ever get stuck at exactly £0 after being fine before, this is the first
+  thing to suspect.
 - This is a personal, single-user project — the Worker trusts anyone who has
   the shared secret, and there's no multi-tenant account handling.

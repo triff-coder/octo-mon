@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fetchAgileRatesForDay,
   fetchHistoricalConsumption,
+  fetchPlannedDispatches,
   fetchTelemetry,
   obtainKrakenJwt,
 } from "../src/octopus";
@@ -27,6 +28,7 @@ beforeEach(async () => {
   await Promise.all(list.keys.map((k) => kv.delete(k.name)));
 
   testEnv.OCTOPUS_API_KEY = "sk_test_123";
+  testEnv.OCTOPUS_ACCOUNT_NUMBER = "A-TEST1234";
   testEnv.OCTOPUS_DEVICE_ID = "00-00-00-00-00-00-00-00";
   testEnv.OCTOPUS_PRODUCT_CODE = "AGILE-24-10-01";
   testEnv.OCTOPUS_TARIFF_CODE = "E-1R-AGILE-24-10-01-C";
@@ -174,6 +176,53 @@ describe("fetchAgileRatesForDay", () => {
     );
     expect(url).toContain(encodeURIComponent("2026-01-15T00:00:00.000Z"));
     expect(url).toContain(encodeURIComponent("2026-01-16T00:00:00.000Z"));
+  });
+});
+
+describe("fetchPlannedDispatches", () => {
+  it("normalizes Kraken's space-separated datetimes to ISO and sorts ascending", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          data: {
+            plannedDispatches: [
+              { startDt: "2026-08-23 00:00:00+00:00", endDt: "2026-08-23 00:30:00+00:00" },
+              { startDt: "2026-08-22 21:02:49+00:00", endDt: "2026-08-23 01:24:26+00:00" },
+            ],
+          },
+        }),
+      ),
+    );
+
+    const dispatches = await fetchPlannedDispatches(testEnv, "jwt-1");
+
+    expect(dispatches).toEqual([
+      { start: "2026-08-22T21:02:49+00:00", end: "2026-08-23T01:24:26+00:00" },
+      { start: "2026-08-23T00:00:00+00:00", end: "2026-08-23T00:30:00+00:00" },
+    ]);
+  });
+
+  it("returns an empty array when the account has no planned dispatches", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ data: { plannedDispatches: [] } })),
+    );
+
+    const dispatches = await fetchPlannedDispatches(testEnv, "jwt-1");
+
+    expect(dispatches).toEqual([]);
+  });
+
+  it("sends the account number and JWT", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ data: { plannedDispatches: [] } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchPlannedDispatches(testEnv, "jwt-abc");
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string).variables).toEqual({ accountNumber: "A-TEST1234" });
+    expect((init.headers as Record<string, string>).Authorization).toBe("JWT jwt-abc");
   });
 });
 

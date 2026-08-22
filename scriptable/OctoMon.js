@@ -278,7 +278,9 @@ function buildStatusWidget(status, stale, dashboardUrl) {
     // Medium doesn't have room for a full-width chart below the stats row
     // (that's what large size is for), but there's spare width up top next
     // to the current-usage numbers — a miniature chart fits nicely there,
-    // with a compact "next few slots" list between the two.
+    // with a compact "next Agile dispatch slots" list between the two
+    // (only shown when Octopus has actually granted any — most of the
+    // time there are none, so this column just doesn't appear).
     const topRow = widget.addStack();
     topRow.layoutHorizontally();
     topRow.centerAlignContent();
@@ -289,18 +291,18 @@ function buildStatusWidget(status, stale, dashboardUrl) {
 
     topRow.addSpacer();
 
-    const upcomingRates = Array.isArray(status.upcomingRates) ? status.upcomingRates : [];
-    if (upcomingRates.length > 0) {
-      const upcomingColumn = topRow.addStack();
-      upcomingColumn.layoutVertically();
-      upcomingColumn.spacing = 1;
+    const nextAgileSlots = Array.isArray(status.nextAgileSlots) ? status.nextAgileSlots : [];
+    if (nextAgileSlots.length > 0) {
+      const nextAgileColumn = topRow.addStack();
+      nextAgileColumn.layoutVertically();
+      nextAgileColumn.spacing = 1;
 
-      const upcomingLabel = upcomingColumn.addText("NEXT");
-      upcomingLabel.font = Font.mediumSystemFont(8);
-      upcomingLabel.textColor = Color.gray();
+      const nextAgileLabel = nextAgileColumn.addText("NEXT AGILE");
+      nextAgileLabel.font = Font.mediumSystemFont(8);
+      nextAgileLabel.textColor = Color.gray();
 
-      upcomingRates.slice(0, 3).forEach((rate) => {
-        const row = upcomingColumn.addText(`${formatTime(rate.validFrom)} ${Math.round(rate.pencePerKwh)}p`);
+      nextAgileSlots.slice(0, 3).forEach((rate) => {
+        const row = nextAgileColumn.addText(`${formatTime(rate.validFrom)} ${Math.round(rate.pencePerKwh)}p`);
         row.font = Font.systemFont(9);
         row.textColor = colorForRate(rate.pencePerKwh);
       });

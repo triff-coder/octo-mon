@@ -57,6 +57,8 @@ export function renderDashboardHtml(token: string): string {
   #staleBadge.visible { display: inline-block; }
   #currentCost { font-size: 40px; font-weight: 700; line-height: 1.1; margin: 0; }
   #currentDetail { font-size: 13px; color: #9aa0a8; margin: 4px 0 12px; }
+  #upcomingSection { display: none; }
+  #upcomingSection.visible { display: block; }
   #upcomingLabel { font-size: 11px; font-weight: 600; color: #9aa0a8; margin: 0 0 6px; }
   .upcoming-row { display: flex; gap: 10px; margin-bottom: 24px; overflow-x: auto; }
   .upcoming-chip { display: flex; flex-direction: column; align-items: center; flex: none; }
@@ -87,8 +89,10 @@ export function renderDashboardHtml(token: string): string {
   <p id="currentCost">&mdash;</p>
   <p id="currentDetail">&mdash;</p>
 
-  <p id="upcomingLabel">NEXT UP</p>
-  <div class="upcoming-row" id="upcomingRow"></div>
+  <div id="upcomingSection">
+    <p id="upcomingLabel">NEXT AGILE</p>
+    <div class="upcoming-row" id="upcomingRow"></div>
+  </div>
 
   <div class="stats-row">
     <div>
@@ -119,6 +123,7 @@ export function renderDashboardHtml(token: string): string {
 
   var currentCostEl = document.getElementById("currentCost");
   var currentDetailEl = document.getElementById("currentDetail");
+  var upcomingSectionEl = document.getElementById("upcomingSection");
   var upcomingRowEl = document.getElementById("upcomingRow");
   var lastHourCostEl = document.getElementById("lastHourCost");
   var todayCostEl = document.getElementById("todayCost");
@@ -165,8 +170,13 @@ export function renderDashboardHtml(token: string): string {
   var UPCOMING_SLOT_COUNT = 6;
 
   function renderUpcoming(rates) {
+    var slots = rates || [];
+    // Only shown when Octopus has actually granted a dispatch slot -- most
+    // of the time there are none, so the whole section stays hidden.
+    upcomingSectionEl.classList.toggle("visible", slots.length > 0);
+
     upcomingRowEl.innerHTML = "";
-    (rates || []).slice(0, UPCOMING_SLOT_COUNT).forEach(function (rate) {
+    slots.slice(0, UPCOMING_SLOT_COUNT).forEach(function (rate) {
       var chip = document.createElement("div");
       chip.className = "upcoming-chip";
 
@@ -234,7 +244,7 @@ export function renderDashboardHtml(token: string): string {
     currentDetailEl.textContent =
       Number(status.currentDemandKw).toFixed(2) + " kW @ " + formatPence(status.currentRate.pencePerKwh) + "/kWh";
 
-    renderUpcoming(status.upcomingRates);
+    renderUpcoming(status.nextAgileSlots);
 
     lastHourCostEl.textContent = formatPounds(status.lastHourCostGbp || 0);
     todayCostEl.textContent = formatPounds(status.todayTotalCostGbp);

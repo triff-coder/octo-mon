@@ -1,7 +1,13 @@
 import { getJson, putJson } from "./cache";
-import { fetchAgileRatesForDay, fetchHistoricalConsumption, fetchTelemetry, obtainKrakenJwt } from "./octopus";
 import {
-  addDaysToDateKey,
+  fetchAgileRatesForDay,
+  fetchHistoricalConsumption,
+  fetchPlannedDispatches,
+  fetchTelemetry,
+  obtainKrakenJwt,
+} from "./octopus";
+import type { DispatchWindow } from "./octopus";
+import {
   billingPeriodKey,
   hourStartUtc,
   isSameBillingPeriod,
@@ -36,7 +42,7 @@ const HOUR_BUCKETS_TTL_SECONDS = (HOUR_BUCKET_RETENTION_HOURS + 6) * 60 * 60;
 // is flagged stale rather than presented as current.
 const STALE_THRESHOLD_SECONDS = 15 * 60;
 // 3 hours' worth of half-hourly slots — enough for both the widget's and
-// dashboard's "upcoming" lists to slice down to whatever they can fit.
+// dashboard's "NEXT AGILE" lists to slice down to whatever they can fit.
 const UPCOMING_RATE_COUNT = 6;
 
 /** Finds the Agile rate whose validity window contains `instant`. */
@@ -320,30 +326,53 @@ async function resolveMonthAccumulator(
 }
 
 /**
- * The next few Agile rates after `now`, earliest first. Usually satisfied
- * entirely from today's already-fetched rates; if fewer than
- * UPCOMING_RATE_COUNT remain (i.e. `now` is late enough in the day), tops up
- * from tomorrow's rates if Octopus has published them yet. Octopus doesn't
- * publish the next day's Agile rates until mid-afternoon, so that fetch
- * commonly 404s earlier in the day — treated as "nothing more to add yet"
- * rather than a failure.
+ * The next few upcoming "smart charging" dispatch slots, earliest first,
+ * chopped into 30-minute display windows and priced at the tariff's
+ * off-peak rate (the cheapest rate published today). These are the
+ * *occasional* windows Octopus grants outside (or extending) a tariff's
+ * normal off-peak schedule — e.g. Intelligent Octopus Go's "bump charge"
+ * boosts — not the everyday scheduled off-peak window itself, so this is
+ * empty most of the time rather than always showing something. An account
+ * without any dispatches configured (or a fetch failure) also just
+ * produces an empty list rather than failing the whole request.
  */
-async function resolveUpcomingRates(env: Env, todayRates: AgileRate[], now: Date): Promise<AgileRate[]> {
-  const upcoming = todayRates
-    .filter((r) => new Date(r.validFrom).getTime() >= now.getTime())
-    .sort((a, b) => new Date(a.validFrom).getTime() - new Date(b.validFrom).getTime());
+async function resolveNextAgileSlots(
+  env: Env,
+  jwt: string,
+  todayRates: AgileRate[],
+  now: Date,
+): Promise<AgileRate[]> {
+  let dispatches: DispatchWindow[];
+  try {
+    dispatches = await fetchPlannedDispatches(env, jwt);
+  } catch {
+    return [];
+  }
+  if (dispatches.length === 0 || todayRates.length === 0) return [];
 
-  if (upcoming.length < UPCOMING_RATE_COUNT) {
-    try {
-      const tomorrowKey = addDaysToDateKey(londonDateKey(now), 1);
-      const tomorrowRates = await fetchAgileRatesForDay(env, tomorrowKey);
-      upcoming.push(...tomorrowRates);
-    } catch {
-      // Not published yet — show whatever's left of today instead.
+  const offPeakRate = Math.min(...todayRates.map((r) => r.pencePerKwh));
+  const nowMs = now.getTime();
+
+  const slots: AgileRate[] = [];
+  for (const dispatch of dispatches) {
+    if (slots.length >= UPCOMING_RATE_COUNT) break;
+
+    const dispatchEndMs = new Date(dispatch.end).getTime();
+    if (dispatchEndMs <= nowMs) continue; // already finished
+
+    let slotStartMs = Math.max(new Date(dispatch.start).getTime(), nowMs);
+    while (slotStartMs < dispatchEndMs && slots.length < UPCOMING_RATE_COUNT) {
+      const slotEndMs = Math.min(slotStartMs + 30 * 60_000, dispatchEndMs);
+      slots.push({
+        pencePerKwh: offPeakRate,
+        validFrom: new Date(slotStartMs).toISOString(),
+        validTo: new Date(slotEndMs).toISOString(),
+      });
+      slotStartMs = slotEndMs;
     }
   }
 
-  return upcoming.slice(0, UPCOMING_RATE_COUNT);
+  return slots;
 }
 
 export interface ComputedStatus {
@@ -418,7 +447,7 @@ export async function computeStatus(
 
   const hourlyBuckets = buildHourlyBuckets(hourBuckets, now);
   const lastHourCostGbp = hourlyBuckets.at(-1)?.costGbp ?? 0;
-  const upcomingRates = await resolveUpcomingRates(env, todayRates, now);
+  const nextAgileSlots = await resolveNextAgileSlots(env, jwt, todayRates, now);
 
   const status: StatusResponse = {
     generatedAt: now.toISOString(),
@@ -433,7 +462,7 @@ export async function computeStatus(
     monthBackfillError: backfillError,
     lastHourCostGbp,
     hourlyBuckets,
-    upcomingRates,
+    nextAgileSlots,
     stale: false,
     snapshotAgeSeconds: 0,
   };

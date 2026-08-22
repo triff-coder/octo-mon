@@ -149,6 +149,53 @@ export async function fetchTelemetry(
     .sort((a, b) => new Date(a.readAt).getTime() - new Date(b.readAt).getTime());
 }
 
+const PLANNED_DISPATCHES_QUERY = `
+  query PlannedDispatches($accountNumber: String!) {
+    plannedDispatches(accountNumber: $accountNumber) {
+      startDt
+      endDt
+    }
+  }
+`;
+
+interface RawDispatch {
+  // Kraken returns these as e.g. "2026-08-22 21:02:49+00:00" (space-
+  // separated, not "T"-separated) — valid once normalized, not strictly
+  // ISO 8601 as-is.
+  startDt: string;
+  endDt: string;
+}
+
+/** A window during which Octopus has committed to the tariff's off-peak rate for smart-charging dispatch (Intelligent Octopus). */
+export interface DispatchWindow {
+  start: string;
+  end: string;
+}
+
+function normalizeKrakenDateTime(raw: string): string {
+  return raw.replace(" ", "T");
+}
+
+/**
+ * Fetches upcoming "smart charging" dispatch windows for the account —
+ * periods where Octopus has committed to the off-peak rate outside (or in
+ * addition to) the tariff's normal scheduled window, e.g. Intelligent
+ * Octopus Go's occasional daytime/early-evening "bump charge" boosts.
+ * Not every tariff or account has these; an account without dispatches
+ * configured returns an empty list rather than an error.
+ */
+export async function fetchPlannedDispatches(env: Env, jwt: string): Promise<DispatchWindow[]> {
+  const data = await graphqlRequest<{ plannedDispatches: RawDispatch[] | null }>(
+    jwt,
+    PLANNED_DISPATCHES_QUERY,
+    { accountNumber: env.OCTOPUS_ACCOUNT_NUMBER },
+  );
+
+  return (data.plannedDispatches ?? [])
+    .map((d) => ({ start: normalizeKrakenDateTime(d.startDt), end: normalizeKrakenDateTime(d.endDt) }))
+    .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+}
+
 interface RawRateEntry {
   value_inc_vat: number;
   valid_from: string;

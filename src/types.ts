@@ -107,14 +107,15 @@ export interface StatusResponse {
    */
   hourlyBuckets: { hourStart: string; costGbp: number; weeklyAvgCostGbp: number }[];
   /**
-   * The next few published Agile half-hourly rates after `currentRate`,
-   * earliest first. Usually all from today; if fewer than the requested
-   * count remain today, best-effort fills in from tomorrow's rates if
-   * Octopus has published them yet (they typically appear from ~4pm) —
-   * otherwise this is just shorter near the end of the day rather than
-   * failing the whole response.
+   * Upcoming "smart charging" dispatch slots (e.g. Intelligent Octopus Go's
+   * occasional off-schedule "bump charge" boosts), earliest first, chopped
+   * into 30-minute windows priced at today's off-peak rate. This is *not*
+   * the everyday scheduled off-peak window — it's only the occasional extra
+   * ones Octopus grants outside/beyond it — so it's empty most of the time,
+   * not just shorter near the end of the day. Also empty on a tariff/account
+   * with no dispatch mechanism at all.
    */
-  upcomingRates: AgileRate[];
+  nextAgileSlots: AgileRate[];
   stale: boolean;
   snapshotAgeSeconds: number;
 }

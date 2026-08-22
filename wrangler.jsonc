@@ -17,7 +17,14 @@
     }
   ],
   "vars": {
-    "OCTOPUS_PRODUCT_CODE": "AGILE-24-10-01",
-    "OCTOPUS_TARIFF_CODE": "E-1R-AGILE-24-10-01-C"
+    // Verified 2026-08-22 against the account's own active electricity
+    // agreement (Kraken GraphQL electricityAgreements query) — the account
+    // is on Intelligent Octopus Go, not Agile: a fixed ~6.9p rate 23:30-
+    // 05:30 local and a fixed ~28.6p rate the rest of the day, not a
+    // half-hourly variable price. These REST rate/consumption endpoints
+    // work the same for any Octopus tariff, so no other code changes are
+    // needed — just the product/tariff codes.
+    "OCTOPUS_PRODUCT_CODE": "INTELLI-VAR-24-10-29",
+    "OCTOPUS_TARIFF_CODE": "E-1R-INTELLI-VAR-24-10-29-B"
   }
 }

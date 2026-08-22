@@ -2,6 +2,7 @@ import { isAuthorized } from "./auth";
 import {
   computeStatus,
   getOrComputeStatus,
+  loadHourBuckets,
   loadMonthAccumulator,
   loadTodayAccumulator,
   persistComputedStatus,
@@ -41,7 +42,8 @@ export default {
       const now = new Date();
       const previousAccumulator = await loadTodayAccumulator(env);
       const previousMonthAccumulator = await loadMonthAccumulator(env);
-      const computed = await computeStatus(env, previousAccumulator, previousMonthAccumulator, now);
+      const previousHourBuckets = await loadHourBuckets(env);
+      const computed = await computeStatus(env, previousAccumulator, previousMonthAccumulator, previousHourBuckets, now);
       await persistComputedStatus(env, computed, now);
     } catch (error) {
       console.error("octo-mon cron tick failed:", error);

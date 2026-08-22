@@ -151,18 +151,37 @@ function formatTime(isoString) {
   return new Date(isoString).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function formatShortDate(isoDateString) {
-  return new Date(`${isoDateString}T00:00:00Z`).toLocaleDateString([], {
-    day: "numeric",
-    month: "short",
-    timeZone: "UTC",
-  });
-}
-
 function colorForRate(pencePerKwh) {
   if (pencePerKwh < 15) return new Color("#4CAF50");
   if (pencePerKwh < 30) return new Color("#FFA726");
   return new Color("#EF5350");
+}
+
+// Renders a simple 24-bar chart (bar height proportional to that hour's cost
+// vs. the most expensive hour in the window) as an image for addImage() —
+// ListWidget has no native chart element. Large widget only: it's the only
+// size with enough spare vertical room for the bars to stay legible.
+function buildHourlyChartImage(buckets, width, height) {
+  const dc = new DrawContext();
+  dc.size = new Size(width, height);
+  dc.opaque = false;
+  dc.respectScreenScale = true;
+
+  const maxCost = Math.max(...buckets.map((b) => b.costGbp), 0.01);
+  const gap = 2;
+  const barWidth = (width - gap * (buckets.length - 1)) / buckets.length;
+  const barColor = new Color("#4FC3F7");
+
+  buckets.forEach((bucket, i) => {
+    const barHeight = Math.max(2, (bucket.costGbp / maxCost) * height);
+    const path = new Path();
+    path.addRoundedRect(new Rect(i * (barWidth + gap), height - barHeight, barWidth, barHeight), 1, 1);
+    dc.addPath(path);
+    dc.setFillColor(barColor);
+    dc.fillPath();
+  });
+
+  return dc.getImage();
 }
 
 function buildStatusWidget(status, stale) {
@@ -206,36 +225,44 @@ function buildStatusWidget(status, stale) {
     todayCost.textColor = Color.white();
   } else {
     // Side-by-side columns make far better use of a medium/large widget's
-    // width than stacking today + this-month vertically, which was
-    // overflowing the widget's height and getting clipped at the bottom.
+    // width than stacking stats vertically, which was overflowing the
+    // widget's height and getting clipped at the bottom. Three columns (down
+    // to label + value only, no subtext) keeps each one legible.
     const statsRow = widget.addStack();
     statsRow.layoutHorizontally();
 
-    const todayColumn = statsRow.addStack();
-    todayColumn.layoutVertically();
-    const todayLabel = todayColumn.addText("TODAY");
-    todayLabel.font = Font.mediumSystemFont(10);
-    todayLabel.textColor = Color.gray();
-    const todayCost = todayColumn.addText(formatPounds(status.todayTotalCostGbp));
-    todayCost.font = Font.boldSystemFont(17);
-    todayCost.textColor = Color.white();
-    const todayKwh = todayColumn.addText(`${status.todayTotalKwh.toFixed(2)} kWh`);
-    todayKwh.font = Font.systemFont(9);
-    todayKwh.textColor = Color.gray();
+    const addStatColumn = (label, valueText) => {
+      const column = statsRow.addStack();
+      column.layoutVertically();
+      const labelText = column.addText(label);
+      labelText.font = Font.mediumSystemFont(10);
+      labelText.textColor = Color.gray();
+      const valueText_ = column.addText(valueText);
+      valueText_.font = Font.boldSystemFont(17);
+      valueText_.textColor = Color.white();
+    };
 
+    addStatColumn("LAST HR", formatPounds(status.lastHourCostGbp ?? 0));
     statsRow.addSpacer();
+    addStatColumn("TODAY", formatPounds(status.todayTotalCostGbp));
+    statsRow.addSpacer();
+    addStatColumn("THIS MONTH", formatPounds(status.thisMonthTotalCostGbp));
 
-    const monthColumn = statsRow.addStack();
-    monthColumn.layoutVertically();
-    const monthLabel = monthColumn.addText("THIS MONTH");
-    monthLabel.font = Font.mediumSystemFont(10);
-    monthLabel.textColor = Color.gray();
-    const monthCost = monthColumn.addText(formatPounds(status.thisMonthTotalCostGbp));
-    monthCost.font = Font.boldSystemFont(17);
-    monthCost.textColor = Color.white();
-    const monthSince = monthColumn.addText(`since ${formatShortDate(status.billingPeriodStart)}`);
-    monthSince.font = Font.systemFont(9);
-    monthSince.textColor = Color.gray();
+    const hourlyBuckets = Array.isArray(status.hourlyBuckets) ? status.hourlyBuckets : [];
+    if (config.widgetFamily === "large" && hourlyBuckets.length > 0) {
+      widget.addSpacer(10);
+
+      const chartLabel = widget.addText("LAST 24 HOURS");
+      chartLabel.font = Font.mediumSystemFont(10);
+      chartLabel.textColor = Color.gray();
+      widget.addSpacer(4);
+
+      const chartWidth = 300;
+      const chartHeight = 70;
+      const chartImage = buildHourlyChartImage(hourlyBuckets, chartWidth, chartHeight);
+      const imageStack = widget.addImage(chartImage);
+      imageStack.imageSize = new Size(chartWidth, chartHeight);
+    }
   }
 
   widget.addSpacer();
@@ -290,6 +317,8 @@ async function run() {
 
   if (config.runsInWidget) {
     Script.setWidget(widget);
+  } else if (config.widgetFamily === "large") {
+    await widget.presentLarge();
   } else if (config.widgetFamily === "medium") {
     await widget.presentMedium();
   } else {

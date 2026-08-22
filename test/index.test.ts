@@ -41,6 +41,8 @@ const cachedStatus: StatusResponse = {
   thisMonthTotalCostGbp: 9,
   billingPeriodStart: "2025-12-20",
   monthBackfillError: null,
+  lastHourCostGbp: 0.4,
+  hourlyBuckets: [],
   stale: false,
   snapshotAgeSeconds: 0,
 };

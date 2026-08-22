@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   addDaysToDateKey,
   billingPeriodKey,
+  hourStartUtc,
   isSameBillingPeriod,
   isSameLondonDay,
   londonDateKey,
@@ -154,6 +155,28 @@ describe("nextBillingPeriodStartUtc", () => {
   it("rolls over the year in December", () => {
     expect(nextBillingPeriodStartUtc(new Date("2026-12-25T10:00:00Z")).toISOString()).toBe(
       "2027-01-20T00:00:00.000Z",
+    );
+  });
+});
+
+describe("hourStartUtc", () => {
+  it("truncates to the start of the containing UTC clock hour", () => {
+    expect(hourStartUtc(new Date("2026-01-15T10:00:00Z")).toISOString()).toBe(
+      "2026-01-15T10:00:00.000Z",
+    );
+    expect(hourStartUtc(new Date("2026-01-15T10:59:59.999Z")).toISOString()).toBe(
+      "2026-01-15T10:00:00.000Z",
+    );
+    expect(hourStartUtc(new Date("2026-01-15T10:00:00.001Z")).toISOString()).toBe(
+      "2026-01-15T10:00:00.000Z",
+    );
+  });
+
+  it("is a plain UTC boundary, unaffected by BST", () => {
+    // Distinguishes it from a London-local hour bucket: 23:30 BST-local
+    // still truncates to a UTC hour boundary, not a local one.
+    expect(hourStartUtc(new Date("2026-06-15T22:30:00Z")).toISOString()).toBe(
+      "2026-06-15T22:00:00.000Z",
     );
   });
 });

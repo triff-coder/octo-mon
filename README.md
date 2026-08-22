@@ -4,9 +4,12 @@ An iPhone home-screen widget (built with [Scriptable](https://scriptable.app/)) 
 
 - **Current cost**: live demand from your Octopus Home Mini × the current Octopus
   Agile unit rate, as £/hr
+- **Last hour's cost**: spend in the most recently completed clock hour, in £
 - **Today's total**: running spend so far today, in £
 - **This month's total**: running spend since the start of the current Octopus
   billing period (the 20th of each month), in £
+- **24-hour chart** (large widget only): a mini bar chart of spend per hour
+  over the last 24 complete hours
 
 A small [Cloudflare Worker](https://workers.cloudflare.com/) sits in between the
 widget and Octopus: it holds your Octopus credentials as secrets, polls Octopus
@@ -119,6 +122,12 @@ You should get back JSON like:
   "thisMonthTotalKwh": 187.4,
   "thisMonthTotalCostGbp": 41.92,
   "billingPeriodStart": "2026-08-20",
+  "monthBackfillError": null,
+  "lastHourCostGbp": 0.21,
+  "hourlyBuckets": [
+    { "hourStart": "2026-08-20T15:00:00.000Z", "costGbp": 0.18 },
+    { "hourStart": "2026-08-20T16:00:00.000Z", "costGbp": 0.24 }
+  ],
   "stale": false,
   "snapshotAgeSeconds": 42
 }
@@ -134,6 +143,15 @@ Octopus's historical consumption REST endpoint before continuing forward with
 live telemetry — so it reflects the whole billing period so far, not just
 however long the Worker happens to have been running. A day the meter has no
 data for (e.g. before a Home Mini was installed) simply contributes zero.
+
+`hourlyBuckets` always has exactly 24 entries, oldest first, one per complete
+UTC clock hour (the sample above is truncated for brevity) — the current,
+still-in-progress hour is deliberately excluded so the chart never shows a
+misleadingly short final bar. `lastHourCostGbp` is that array's last entry.
+Unlike the month total, hour buckets are built purely from live telemetry
+going forward, with no historical backfill, so the chart fills in gradually
+over the first 24 hours after this feature starts running (earlier hours
+just show £0.00 until then).
 
 If it's the very first request, the Worker computes live (a bit slower); after
 that, the 5-minute cron keeps a warm snapshot so requests are fast.
@@ -162,13 +180,16 @@ npm test
    iOS Keychain for this, but it turned out not to be reliably readable from
    a widget's own process, only from the app — hence the plain local file.)
 4. Long-press your home screen → **+** → search **Scriptable** → add a widget,
-   choose the small or medium size, then edit the widget and select the
-   OctoMon script.
+   choose small, medium, or large, then edit the widget and select the
+   OctoMon script. Pick large if you want the 24-hour chart — it needs the
+   extra height, so smaller sizes skip it.
 
-The widget shows current £/hr (colour-coded by rate band), today's running
-total, and (medium size only) this month's running total. If the Worker is
-briefly unreachable, it falls back to the last successfully fetched data and
-shows a "STALE" badge with the time it's stale since, rather than going blank.
+The widget shows current £/hr (colour-coded by rate band) and today's running
+total on every size. Medium and large widgets add last hour's cost and this
+month's running total as extra columns; large widgets also add a mini bar
+chart of the last 24 hours' spend underneath. If the Worker is briefly
+unreachable, it falls back to the last successfully fetched data and shows a
+"STALE" badge with the time it's stale since, rather than going blank.
 
 **On refresh frequency:** the Worker itself refreshes every 5 minutes, but
 the widget won't visibly update that often. iOS throttles home-screen widget

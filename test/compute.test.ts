@@ -1,16 +1,26 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  advanceHourBuckets,
   advanceMonthAccumulator,
   advanceTodayAccumulator,
+  buildHourlyBuckets,
   computeStatus,
   findRateForInstant,
   getOrComputeStatus,
+  loadHourBuckets,
   loadMonthAccumulator,
   loadTodayAccumulator,
   persistComputedStatus,
 } from "../src/compute";
-import type { AgileRate, Env, MonthAccumulator, StatusResponse, TodayAccumulator } from "../src/types";
+import type {
+  AgileRate,
+  Env,
+  HourBucketsState,
+  MonthAccumulator,
+  StatusResponse,
+  TodayAccumulator,
+} from "../src/types";
 
 const testEnv = env as unknown as Env;
 
@@ -260,6 +270,113 @@ describe("advanceMonthAccumulator", () => {
   });
 });
 
+describe("advanceHourBuckets", () => {
+  const rates: AgileRate[] = [
+    { pencePerKwh: 20, validFrom: "2026-01-15T10:00:00Z", validTo: "2026-01-15T11:30:00Z" },
+  ];
+  const ratesByDay = new Map([["2026-01-15", rates]]);
+  const now = new Date("2026-01-15T11:15:00Z");
+
+  it("buckets points into their containing UTC clock hour, starting from null", () => {
+    const points = [
+      { readAt: "2026-01-15T10:15:00Z", consumptionDeltaKwh: 1 },
+      { readAt: "2026-01-15T10:45:00Z", consumptionDeltaKwh: 2 },
+      { readAt: "2026-01-15T11:05:00Z", consumptionDeltaKwh: 4 },
+    ];
+
+    const state = advanceHourBuckets(null, points, ratesByDay, now);
+
+    expect(state.buckets).toHaveLength(2);
+    const tenHour = state.buckets.find((b) => b.hourStart === "2026-01-15T10:00:00.000Z");
+    const elevenHour = state.buckets.find((b) => b.hourStart === "2026-01-15T11:00:00.000Z");
+    expect(tenHour?.kwhSoFar).toBeCloseTo(3);
+    expect(tenHour?.costGbpSoFar).toBeCloseTo((3 * 20) / 100);
+    expect(elevenHour?.kwhSoFar).toBeCloseTo(4);
+    expect(state.lastReadingAt).toBe("2026-01-15T11:05:00Z");
+  });
+
+  it("does not double-count points at or before the state's last reading", () => {
+    const existing: HourBucketsState = {
+      buckets: [{ hourStart: "2026-01-15T10:00:00.000Z", kwhSoFar: 1, costGbpSoFar: 0.2 }],
+      lastReadingAt: "2026-01-15T10:15:00Z",
+    };
+    const points = [
+      { readAt: "2026-01-15T10:15:00Z", consumptionDeltaKwh: 1 }, // at cutoff, skipped
+      { readAt: "2026-01-15T10:45:00Z", consumptionDeltaKwh: 2 }, // new, same hour
+    ];
+
+    const state = advanceHourBuckets(existing, points, ratesByDay, now);
+
+    const tenHour = state.buckets.find((b) => b.hourStart === "2026-01-15T10:00:00.000Z");
+    expect(tenHour?.kwhSoFar).toBeCloseTo(3); // 1 (existing) + 2 (new)
+  });
+
+  it("does not mutate the state object passed in", () => {
+    const existing: HourBucketsState = {
+      buckets: [{ hourStart: "2026-01-15T10:00:00.000Z", kwhSoFar: 1, costGbpSoFar: 0.2 }],
+      lastReadingAt: "2026-01-15T10:15:00Z",
+    };
+    const frozenCopy = JSON.parse(JSON.stringify(existing));
+
+    advanceHourBuckets(
+      existing,
+      [{ readAt: "2026-01-15T10:45:00Z", consumptionDeltaKwh: 2 }],
+      ratesByDay,
+      now,
+    );
+
+    expect(existing).toEqual(frozenCopy);
+  });
+
+  it("ages out buckets older than the retention window instead of growing forever", () => {
+    const existing: HourBucketsState = {
+      buckets: [{ hourStart: "2026-01-10T10:00:00.000Z", kwhSoFar: 5, costGbpSoFar: 1 }],
+      lastReadingAt: "2026-01-10T10:15:00Z",
+    };
+
+    const state = advanceHourBuckets(
+      existing,
+      [{ readAt: "2026-01-15T10:15:00Z", consumptionDeltaKwh: 1 }],
+      ratesByDay,
+      now,
+    );
+
+    expect(state.buckets.find((b) => b.hourStart === "2026-01-10T10:00:00.000Z")).toBeUndefined();
+  });
+});
+
+describe("buildHourlyBuckets", () => {
+  it("normalizes to exactly 24 entries covering the last 24 complete UTC hours, oldest first", () => {
+    const now = new Date("2026-01-15T11:30:00Z"); // current (incomplete) hour starts at 11:00
+    const state: HourBucketsState = {
+      buckets: [
+        { hourStart: "2026-01-15T10:00:00.000Z", kwhSoFar: 2, costGbpSoFar: 0.4 },
+        { hourStart: "2026-01-15T11:00:00.000Z", kwhSoFar: 9, costGbpSoFar: 1.8 }, // in-progress, excluded
+      ],
+      lastReadingAt: "2026-01-15T11:15:00Z",
+    };
+
+    const buckets = buildHourlyBuckets(state, now);
+
+    expect(buckets).toHaveLength(24);
+    expect(buckets[0]?.hourStart).toBe("2026-01-14T11:00:00.000Z"); // oldest
+    expect(buckets.at(-1)?.hourStart).toBe("2026-01-15T10:00:00.000Z"); // most recent complete hour
+    expect(buckets.at(-1)?.costGbp).toBeCloseTo(0.4);
+    // The current in-progress hour never appears.
+    expect(buckets.some((b) => b.hourStart === "2026-01-15T11:00:00.000Z")).toBe(false);
+  });
+
+  it("reports £0 for hours with no bucket yet rather than omitting them", () => {
+    const now = new Date("2026-01-15T11:30:00Z");
+    const state: HourBucketsState = { buckets: [], lastReadingAt: new Date(0).toISOString() };
+
+    const buckets = buildHourlyBuckets(state, now);
+
+    expect(buckets).toHaveLength(24);
+    expect(buckets.every((b) => b.costGbp === 0)).toBe(true);
+  });
+});
+
 describe("computeStatus", () => {
   it("computes current demand/cost and today's total from telemetry + rates", async () => {
     vi.stubGlobal(
@@ -274,7 +391,7 @@ describe("computeStatus", () => {
     );
 
     const now = new Date("2026-01-15T10:06:00Z");
-    const { status, accumulator, monthAccumulator } = await computeStatus(testEnv, null, null, now);
+    const { status, accumulator, monthAccumulator } = await computeStatus(testEnv, null, null, null, now);
 
     expect(status.currentDemandKw).toBe(2);
     expect(status.currentRate.pencePerKwh).toBe(20);
@@ -317,6 +434,7 @@ describe("computeStatus", () => {
       testEnv,
       previous,
       previousMonth,
+      null,
       new Date("2026-01-15T10:11:00Z"),
     );
 
@@ -351,11 +469,32 @@ describe("computeStatus", () => {
       testEnv,
       null,
       previousMonth,
+      null,
       new Date("2026-01-20T10:01:00Z"),
     );
 
     expect(monthAccumulator.periodKey).toBe("2026-01-20");
     expect(status.thisMonthTotalKwh).toBeCloseTo(1);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("surfaces lastHourCostGbp and hourlyBuckets built from the same telemetry", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:15:00Z", demand: 500, consumptionDelta: 1000 }],
+        pencePerKwh: 10,
+      }),
+    );
+
+    const now = new Date("2026-01-15T11:05:00Z"); // the 10:00 hour is now complete
+    const { status, hourBuckets } = await computeStatus(testEnv, null, null, null, now);
+
+    expect(status.hourlyBuckets).toHaveLength(24);
+    expect(status.hourlyBuckets.at(-1)?.hourStart).toBe("2026-01-15T10:00:00.000Z");
+    expect(status.lastHourCostGbp).toBeCloseTo(0.1); // 1 kWh @ 10p
+    expect(hourBuckets.buckets.some((b) => b.hourStart === "2026-01-15T10:00:00.000Z")).toBe(true);
 
     vi.unstubAllGlobals();
   });
@@ -389,6 +528,7 @@ describe("computeStatus month/today invariant", () => {
       testEnv,
       null,
       previousMonth,
+      null,
       new Date("2026-01-15T10:06:00Z"),
     );
 
@@ -422,6 +562,7 @@ describe("computeStatus month backfill", () => {
       testEnv,
       null,
       null,
+      null,
       new Date("2026-01-15T10:01:00Z"),
     );
 
@@ -445,6 +586,7 @@ describe("computeStatus month backfill", () => {
 
     const { status, monthAccumulator } = await computeStatus(
       testEnv,
+      null,
       null,
       null,
       new Date("2026-01-15T10:01:00Z"),
@@ -471,7 +613,7 @@ describe("computeStatus month backfill", () => {
       }),
     );
 
-    const { status } = await computeStatus(testEnv, null, null, new Date("2026-01-15T10:01:00Z"));
+    const { status } = await computeStatus(testEnv, null, null, null, new Date("2026-01-15T10:01:00Z"));
 
     expect(status.monthBackfillError).toBeNull();
 
@@ -492,7 +634,7 @@ describe("computeStatus month backfill", () => {
       lastReadingAt: "2026-01-15T10:05:00Z",
     };
 
-    await computeStatus(testEnv, null, previousMonth, new Date("2026-01-15T10:11:00Z"));
+    await computeStatus(testEnv, null, previousMonth, null, new Date("2026-01-15T10:11:00Z"));
 
     const consumptionCalls = fetchMock.mock.calls.filter(([url]) =>
       String(url).includes("/consumption/"),
@@ -509,7 +651,7 @@ describe("computeStatus month backfill", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await computeStatus(testEnv, null, null, new Date("2026-01-20T10:01:00Z"));
+    await computeStatus(testEnv, null, null, null, new Date("2026-01-20T10:01:00Z"));
 
     const consumptionCalls = fetchMock.mock.calls.filter(([url]) =>
       String(url).includes("/consumption/"),
@@ -530,7 +672,7 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       }),
     );
 
-    const computed = await computeStatus(testEnv, null, null, now);
+    const computed = await computeStatus(testEnv, null, null, null, now);
     await persistComputedStatus(testEnv, computed, now);
     vi.unstubAllGlobals();
 
@@ -539,6 +681,9 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
 
     const loadedMonthAccumulator = await loadMonthAccumulator(testEnv);
     expect(loadedMonthAccumulator).toEqual(computed.monthAccumulator);
+
+    const loadedHourBuckets = await loadHourBuckets(testEnv);
+    expect(loadedHourBuckets).toEqual(computed.hourBuckets);
   });
 
   it("getOrComputeStatus returns a fresh cached snapshot without recomputing", async () => {
@@ -554,6 +699,8 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       thisMonthTotalCostGbp: 9,
       billingPeriodStart: "2025-12-20",
       monthBackfillError: null,
+      lastHourCostGbp: 0.4,
+      hourlyBuckets: [],
       stale: false,
       snapshotAgeSeconds: 0,
     };
@@ -586,6 +733,8 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       thisMonthTotalCostGbp: 9,
       billingPeriodStart: "2025-12-20",
       monthBackfillError: null,
+      lastHourCostGbp: 0.4,
+      hourlyBuckets: [],
       stale: false,
       snapshotAgeSeconds: 0,
     };

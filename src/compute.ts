@@ -2,6 +2,7 @@ import { getJson, putJson } from "./cache";
 import { fetchAgileRatesForDay, fetchHistoricalConsumption, fetchTelemetry, obtainKrakenJwt } from "./octopus";
 import {
   billingPeriodKey,
+  hourStartUtc,
   isSameBillingPeriod,
   isSameLondonDay,
   londonDateKey,
@@ -10,12 +11,24 @@ import {
   nextLondonMidnightUtc,
   secondsBetween,
 } from "./time";
-import type { AgileRate, Env, MonthAccumulator, StatusResponse, TodayAccumulator } from "./types";
+import type {
+  AgileRate,
+  Env,
+  HourBucketsState,
+  MonthAccumulator,
+  StatusResponse,
+  TodayAccumulator,
+} from "./types";
 
 const STATUS_SNAPSHOT_KV_KEY = "status:latest";
 const STATUS_SNAPSHOT_TTL_SECONDS = 30 * 60;
 const TODAY_ACCUMULATOR_KV_KEY = "today:accumulator";
 const MONTH_ACCUMULATOR_KV_KEY = "month:accumulator";
+const HOUR_BUCKETS_KV_KEY = "hours:buckets";
+const HOUR_BUCKETS_TTL_SECONDS = 26 * 60 * 60;
+// Buckets older than this are dropped each tick — a day's worth of margin
+// beyond the 24 complete hours the widget actually charts.
+const HOUR_BUCKET_RETENTION_HOURS = 25;
 // A cached snapshot older than this (roughly 3 missed 5-minute cron ticks)
 // is flagged stale rather than presented as current.
 const STALE_THRESHOLD_SECONDS = 15 * 60;
@@ -107,6 +120,79 @@ export function advanceMonthAccumulator(
   }
 
   return acc;
+}
+
+/**
+ * Applies newly-fetched telemetry points to rolling per-UTC-hour buckets,
+ * pricing each point the same way as the today/month accumulators. Unlike
+ * those, this never resets — a point's hour bucket is created on demand and
+ * buckets simply age out (see HOUR_BUCKET_RETENTION_HOURS) once they're
+ * older than the widget's 24-hour chart window needs.
+ */
+export function advanceHourBuckets(
+  state: HourBucketsState | null,
+  points: { readAt: string; consumptionDeltaKwh: number }[],
+  ratesByDay: Map<string, AgileRate[]>,
+  now: Date,
+): HourBucketsState {
+  const st: HourBucketsState = state
+    ? { buckets: state.buckets.map((b) => ({ ...b })), lastReadingAt: state.lastReadingAt }
+    : { buckets: [], lastReadingAt: new Date(0).toISOString() };
+
+  const lastAppliedMs = new Date(st.lastReadingAt).getTime();
+
+  for (const point of points) {
+    const pointMs = new Date(point.readAt).getTime();
+    if (pointMs <= lastAppliedMs) continue;
+
+    const pointDate = new Date(point.readAt);
+    const dayKey = londonDateKey(pointDate);
+    const rates = ratesByDay.get(dayKey) ?? [];
+    const rate = findRateForInstant(rates, pointDate);
+
+    if (rate) {
+      const bucketStart = hourStartUtc(pointDate).toISOString();
+      let bucket = st.buckets.find((b) => b.hourStart === bucketStart);
+      if (!bucket) {
+        bucket = { hourStart: bucketStart, kwhSoFar: 0, costGbpSoFar: 0 };
+        st.buckets.push(bucket);
+      }
+      bucket.kwhSoFar += point.consumptionDeltaKwh;
+      bucket.costGbpSoFar += (point.consumptionDeltaKwh * rate.pencePerKwh) / 100;
+    }
+    st.lastReadingAt = point.readAt;
+  }
+
+  const cutoffMs = now.getTime() - HOUR_BUCKET_RETENTION_HOURS * 3_600_000;
+  st.buckets = st.buckets
+    .filter((b) => new Date(b.hourStart).getTime() >= cutoffMs)
+    .sort((a, b) => a.hourStart.localeCompare(b.hourStart));
+
+  return st;
+}
+
+/**
+ * Normalizes hour-bucket state into exactly 24 entries, oldest first,
+ * covering the last 24 *complete* UTC clock hours (never the current
+ * in-progress hour, which would otherwise render as a misleadingly short
+ * bar). Hours with no bucket yet (e.g. before this feature started
+ * accumulating, or a gap) report £0.00 rather than being omitted, so the
+ * chart always has exactly 24 bars.
+ */
+export function buildHourlyBuckets(
+  state: HourBucketsState,
+  now: Date,
+): { hourStart: string; costGbp: number }[] {
+  const currentHourStartMs = hourStartUtc(now).getTime();
+  const result: { hourStart: string; costGbp: number }[] = [];
+
+  for (let i = 24; i >= 1; i--) {
+    const hourStartIso = new Date(currentHourStartMs - i * 3_600_000).toISOString();
+    const bucket = state.buckets.find((b) => b.hourStart === hourStartIso);
+    result.push({ hourStart: hourStartIso, costGbp: bucket?.costGbpSoFar ?? 0 });
+  }
+
+  return result;
 }
 
 /**
@@ -207,19 +293,21 @@ export interface ComputedStatus {
   status: StatusResponse;
   accumulator: TodayAccumulator;
   monthAccumulator: MonthAccumulator;
+  hourBuckets: HourBucketsState;
 }
 
 /**
  * Orchestrates a full refresh: obtains a Kraken JWT, resolves the month
  * accumulator (backfilling from history on a cold start/period rollover),
- * fetches live telemetry since the last known reading, advances the today
- * and this-month accumulators from it, and looks up the current rate/demand
- * for the response payload.
+ * fetches live telemetry since the last known reading, advances the today,
+ * this-month, and rolling hour-bucket accumulators from it, and looks up
+ * the current rate/demand for the response payload.
  */
 export async function computeStatus(
   env: Env,
   previousAccumulator: TodayAccumulator | null,
   previousMonthAccumulator: MonthAccumulator | null,
+  previousHourBuckets: HourBucketsState | null,
   now: Date = new Date(),
 ): Promise<ComputedStatus> {
   const jwt = await obtainKrakenJwt(env, now);
@@ -245,6 +333,7 @@ export async function computeStatus(
   const points = await fetchTelemetry(env, jwt, fetchSince, now);
   const accumulator = advanceTodayAccumulator(previousAccumulator, points, ratesByDay, now);
   let monthAccumulator = advanceMonthAccumulator(resolvedMonthAccumulator, points, ratesByDay, now);
+  const hourBuckets = advanceHourBuckets(previousHourBuckets, points, ratesByDay, now);
 
   // Today's usage is always a subset of the current billing period, so this
   // month's total can never legitimately be less than today's. If it ever
@@ -270,6 +359,9 @@ export async function computeStatus(
     ? (currentDemandKw * currentRate.pencePerKwh) / 100
     : 0;
 
+  const hourlyBuckets = buildHourlyBuckets(hourBuckets, now);
+  const lastHourCostGbp = hourlyBuckets.at(-1)?.costGbp ?? 0;
+
   const status: StatusResponse = {
     generatedAt: now.toISOString(),
     currentRate: currentRate ?? { pencePerKwh: 0, validFrom: now.toISOString(), validTo: now.toISOString() },
@@ -281,11 +373,13 @@ export async function computeStatus(
     thisMonthTotalCostGbp: monthAccumulator.costGbpSoFar,
     billingPeriodStart: monthAccumulator.periodKey,
     monthBackfillError: backfillError,
+    lastHourCostGbp,
+    hourlyBuckets,
     stale: false,
     snapshotAgeSeconds: 0,
   };
 
-  return { status, accumulator, monthAccumulator };
+  return { status, accumulator, monthAccumulator, hourBuckets };
 }
 
 /** Writes a freshly computed status + accumulators to KV. */
@@ -299,6 +393,9 @@ export async function persistComputedStatus(env: Env, computed: ComputedStatus, 
   await putJson(env.OCTOMON_KV, MONTH_ACCUMULATOR_KV_KEY, computed.monthAccumulator, {
     expirationTtl: Math.max(60, secondsBetween(now, nextBillingPeriodStartUtc(now)) + 3600),
   });
+  await putJson(env.OCTOMON_KV, HOUR_BUCKETS_KV_KEY, computed.hourBuckets, {
+    expirationTtl: HOUR_BUCKETS_TTL_SECONDS,
+  });
 }
 
 export async function loadTodayAccumulator(env: Env): Promise<TodayAccumulator | null> {
@@ -307,6 +404,10 @@ export async function loadTodayAccumulator(env: Env): Promise<TodayAccumulator |
 
 export async function loadMonthAccumulator(env: Env): Promise<MonthAccumulator | null> {
   return getJson<MonthAccumulator>(env.OCTOMON_KV, MONTH_ACCUMULATOR_KV_KEY);
+}
+
+export async function loadHourBuckets(env: Env): Promise<HourBucketsState | null> {
+  return getJson<HourBucketsState>(env.OCTOMON_KV, HOUR_BUCKETS_KV_KEY);
 }
 
 /**
@@ -327,7 +428,8 @@ export async function getOrComputeStatus(env: Env, now: Date = new Date()): Prom
 
   const previousAccumulator = await loadTodayAccumulator(env);
   const previousMonthAccumulator = await loadMonthAccumulator(env);
-  const computed = await computeStatus(env, previousAccumulator, previousMonthAccumulator, now);
+  const previousHourBuckets = await loadHourBuckets(env);
+  const computed = await computeStatus(env, previousAccumulator, previousMonthAccumulator, previousHourBuckets, now);
   await persistComputedStatus(env, computed, now);
   return computed.status;
 }

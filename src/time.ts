@@ -38,6 +38,15 @@ export function secondsBetween(a: Date, b: Date): number {
   return Math.round((b.getTime() - a.getTime()) / 1000);
 }
 
+/**
+ * The UTC instant at the start of the clock hour containing `instant`
+ * (plain UTC truncation — hour buckets are a fixed-width UTC grid, not a
+ * Europe/London local concept, so no DST handling is needed here).
+ */
+export function hourStartUtc(instant: Date): Date {
+  return new Date(Math.floor(instant.getTime() / 3_600_000) * 3_600_000);
+}
+
 export function addDaysToDateKey(dateKey: string, days: number): string {
   const [y, m, d] = dateKey.split("-").map(Number) as [number, number, number];
   return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);

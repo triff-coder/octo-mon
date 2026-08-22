@@ -59,6 +59,25 @@ export interface MonthAccumulator {
   lastReadingAt: string;
 }
 
+/** Running totals for a single UTC clock hour, part of HourBucketsState. */
+export interface HourBucket {
+  /** ISO instant at the start of this UTC clock hour. */
+  hourStart: string;
+  kwhSoFar: number;
+  costGbpSoFar: number;
+}
+
+/**
+ * Rolling per-hour totals stored in KV, covering roughly the last 25 hours
+ * (trimmed each tick). Unlike the today/month accumulators this never
+ * "resets" — old buckets just age out — so the widget can chart the last 24
+ * complete hours.
+ */
+export interface HourBucketsState {
+  buckets: HourBucket[];
+  lastReadingAt: string;
+}
+
 /** The JSON payload served from GET /status. */
 export interface StatusResponse {
   generatedAt: string;
@@ -76,6 +95,15 @@ export interface StatusResponse {
   billingPeriodStart: string;
   /** Set when the month backfill was attempted and failed (falling back to a zero-balance start), null otherwise. */
   monthBackfillError: string | null;
+  /** Cost of the most recently completed UTC clock hour (not the current in-progress one). */
+  lastHourCostGbp: number;
+  /**
+   * The last 24 complete UTC clock hours, oldest first, each an ISO hour
+   * start + its cost. Built purely from live telemetry (no backfill), so it
+   * fills in gradually over the first 24 hours after this feature first
+   * runs — hours before that show £0.00 rather than missing data.
+   */
+  hourlyBuckets: { hourStart: string; costGbp: number }[];
   stale: boolean;
   snapshotAgeSeconds: number;
 }

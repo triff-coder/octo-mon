@@ -169,8 +169,8 @@ https://octo-mon.<your-subdomain>.workers.dev/dashboard?token=<your WIDGET_SHARE
 
 A plain browser page showing the same information as the large widget
 (current £/hr, last hour/today/this month, and the 24-hour chart with 7-day
-average marks) — bookmark it, or open it any time you want a reading that's
-more current than the widget. It's not subject to iOS's home-screen widget
+average marks and 3-hourly time labels) — bookmark it, or open it any time
+you want a reading that's more current than the widget. It's not subject to iOS's home-screen widget
 refresh throttling: every 30 seconds (and on every page load/reload) it calls
 `/status?refresh=true`, which skips the cached snapshot and fetches live from
 Octopus — so what you see is never older than your Home Mini's own last

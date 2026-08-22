@@ -9,7 +9,6 @@
  * report (a browser reload, or just waiting for the next 30s tick, gets you
  * live data on demand rather than waiting on the 5-minute cron).
  *
-
  * `token` is the already-authenticated shared secret for this request (the
  * same one that authorized loading this page), embedded so the page's own
  * client-side polling can call /status without prompting for it again. This
@@ -62,7 +61,7 @@ export function renderDashboardHtml(token: string): string {
   .stat-label { font-size: 11px; font-weight: 600; color: #9aa0a8; margin: 0 0 4px; }
   .stat-value { font-size: 20px; font-weight: 700; margin: 0; }
   #chartLabel { font-size: 11px; color: #9aa0a8; margin-bottom: 8px; }
-  canvas { width: 100%; height: 140px; display: block; }
+  canvas { width: 100%; height: 160px; display: block; }
   #footer { font-size: 11px; color: #9aa0a8; margin-top: 16px; }
   #errorBanner {
     display: none; background: #3a1d1d; border: 1px solid #EF5350;
@@ -99,7 +98,7 @@ export function renderDashboardHtml(token: string): string {
   </div>
 
   <p id="chartLabel">LAST 24 HOURS &middot; mark = 7-day avg</p>
-  <canvas id="chart" width="960" height="280"></canvas>
+  <canvas id="chart" width="960" height="320"></canvas>
 
   <p id="footer">Loading&hellip;</p>
 </main>
@@ -139,11 +138,30 @@ export function renderDashboardHtml(token: string): string {
     return new Date(isoString).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
+  // The local (Europe/London) clock hour for a bucket's UTC hourStart, e.g.
+  // "14" — mirrors the medium widget's chart axis labels.
+  function formatHourLabel(isoString) {
+    var parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Europe/London",
+      hour: "2-digit",
+      hour12: false,
+    }).formatToParts(new Date(isoString));
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i].type === "hour") return parts[i].value;
+    }
+    return "";
+  }
+
+  var HOUR_LABEL_INTERVAL = 3;
+
   function drawChart(buckets) {
     var width = canvas.width;
     var height = canvas.height;
     ctx.clearRect(0, 0, width, height);
     if (!buckets || buckets.length === 0) return;
+
+    var labelHeight = 40;
+    var chartHeight = height - labelHeight;
 
     var maxCost = 0.01;
     for (var i = 0; i < buckets.length; i++) {
@@ -152,20 +170,29 @@ export function renderDashboardHtml(token: string): string {
 
     var gap = Math.max(2, width / buckets.length / 8);
     var barWidth = (width - gap * (buckets.length - 1)) / buckets.length;
-    var markHeight = Math.max(2, Math.round(height / 40));
+    var markHeight = Math.max(2, Math.round(chartHeight / 40));
+
+    ctx.font = "24px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
 
     for (var j = 0; j < buckets.length; j++) {
       var bucket = buckets[j];
       var x = j * (barWidth + gap);
-      var barHeight = Math.max(3, (bucket.costGbp / maxCost) * height);
+      var barHeight = Math.max(3, (bucket.costGbp / maxCost) * chartHeight);
       ctx.fillStyle = "#4FC3F7";
-      ctx.fillRect(x, height - barHeight, barWidth, barHeight);
+      ctx.fillRect(x, chartHeight - barHeight, barWidth, barHeight);
 
       if (bucket.weeklyAvgCostGbp > 0) {
-        var markCenterY = height - (bucket.weeklyAvgCostGbp / maxCost) * height;
-        var markY = Math.min(height - markHeight, Math.max(0, markCenterY - markHeight / 2));
+        var markCenterY = chartHeight - (bucket.weeklyAvgCostGbp / maxCost) * chartHeight;
+        var markY = Math.min(chartHeight - markHeight, Math.max(0, markCenterY - markHeight / 2));
         ctx.fillStyle = "rgba(255,255,255,0.9)";
         ctx.fillRect(x, markY, barWidth, markHeight);
+      }
+
+      if (j % HOUR_LABEL_INTERVAL === 0) {
+        ctx.fillStyle = "#9aa0a8";
+        ctx.fillText(formatHourLabel(bucket.hourStart), x + barWidth / 2, chartHeight + 6);
       }
     }
   }

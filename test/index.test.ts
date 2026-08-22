@@ -43,6 +43,7 @@ const cachedStatus: StatusResponse = {
   monthBackfillError: null,
   lastHourCostGbp: 0.4,
   hourlyBuckets: [],
+  upcomingRates: [],
   stale: false,
   snapshotAgeSeconds: 0,
 };

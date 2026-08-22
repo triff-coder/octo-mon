@@ -1,6 +1,7 @@
 import { getJson, putJson } from "./cache";
 import { fetchAgileRatesForDay, fetchHistoricalConsumption, fetchTelemetry, obtainKrakenJwt } from "./octopus";
 import {
+  addDaysToDateKey,
   billingPeriodKey,
   hourStartUtc,
   isSameBillingPeriod,
@@ -34,6 +35,9 @@ const HOUR_BUCKETS_TTL_SECONDS = (HOUR_BUCKET_RETENTION_HOURS + 6) * 60 * 60;
 // A cached snapshot older than this (roughly 3 missed 5-minute cron ticks)
 // is flagged stale rather than presented as current.
 const STALE_THRESHOLD_SECONDS = 15 * 60;
+// 3 hours' worth of half-hourly slots — enough for both the widget's and
+// dashboard's "upcoming" lists to slice down to whatever they can fit.
+const UPCOMING_RATE_COUNT = 6;
 
 /** Finds the Agile rate whose validity window contains `instant`. */
 export function findRateForInstant(rates: AgileRate[], instant: Date): AgileRate | null {
@@ -315,6 +319,33 @@ async function resolveMonthAccumulator(
   }
 }
 
+/**
+ * The next few Agile rates after `now`, earliest first. Usually satisfied
+ * entirely from today's already-fetched rates; if fewer than
+ * UPCOMING_RATE_COUNT remain (i.e. `now` is late enough in the day), tops up
+ * from tomorrow's rates if Octopus has published them yet. Octopus doesn't
+ * publish the next day's Agile rates until mid-afternoon, so that fetch
+ * commonly 404s earlier in the day — treated as "nothing more to add yet"
+ * rather than a failure.
+ */
+async function resolveUpcomingRates(env: Env, todayRates: AgileRate[], now: Date): Promise<AgileRate[]> {
+  const upcoming = todayRates
+    .filter((r) => new Date(r.validFrom).getTime() >= now.getTime())
+    .sort((a, b) => new Date(a.validFrom).getTime() - new Date(b.validFrom).getTime());
+
+  if (upcoming.length < UPCOMING_RATE_COUNT) {
+    try {
+      const tomorrowKey = addDaysToDateKey(londonDateKey(now), 1);
+      const tomorrowRates = await fetchAgileRatesForDay(env, tomorrowKey);
+      upcoming.push(...tomorrowRates);
+    } catch {
+      // Not published yet — show whatever's left of today instead.
+    }
+  }
+
+  return upcoming.slice(0, UPCOMING_RATE_COUNT);
+}
+
 export interface ComputedStatus {
   status: StatusResponse;
   accumulator: TodayAccumulator;
@@ -387,6 +418,7 @@ export async function computeStatus(
 
   const hourlyBuckets = buildHourlyBuckets(hourBuckets, now);
   const lastHourCostGbp = hourlyBuckets.at(-1)?.costGbp ?? 0;
+  const upcomingRates = await resolveUpcomingRates(env, todayRates, now);
 
   const status: StatusResponse = {
     generatedAt: now.toISOString(),
@@ -401,6 +433,7 @@ export async function computeStatus(
     monthBackfillError: backfillError,
     lastHourCostGbp,
     hourlyBuckets,
+    upcomingRates,
     stale: false,
     snapshotAgeSeconds: 0,
   };

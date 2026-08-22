@@ -106,6 +106,15 @@ export interface StatusResponse {
    * history has accumulated), for an at-a-glance "vs. usual" comparison.
    */
   hourlyBuckets: { hourStart: string; costGbp: number; weeklyAvgCostGbp: number }[];
+  /**
+   * The next few published Agile half-hourly rates after `currentRate`,
+   * earliest first. Usually all from today; if fewer than the requested
+   * count remain today, best-effort fills in from tomorrow's rates if
+   * Octopus has published them yet (they typically appear from ~4pm) —
+   * otherwise this is just shorter near the end of the day rather than
+   * failing the whole response.
+   */
+  upcomingRates: AgileRate[];
   stale: boolean;
   snapshotAgeSeconds: number;
 }

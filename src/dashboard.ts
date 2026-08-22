@@ -56,7 +56,12 @@ export function renderDashboardHtml(token: string): string {
   }
   #staleBadge.visible { display: inline-block; }
   #currentCost { font-size: 40px; font-weight: 700; line-height: 1.1; margin: 0; }
-  #currentDetail { font-size: 13px; color: #9aa0a8; margin: 4px 0 24px; }
+  #currentDetail { font-size: 13px; color: #9aa0a8; margin: 4px 0 12px; }
+  #upcomingLabel { font-size: 11px; font-weight: 600; color: #9aa0a8; margin: 0 0 6px; }
+  .upcoming-row { display: flex; gap: 10px; margin-bottom: 24px; overflow-x: auto; }
+  .upcoming-chip { display: flex; flex-direction: column; align-items: center; flex: none; }
+  .upcoming-chip .time { font-size: 11px; color: #9aa0a8; }
+  .upcoming-chip .price { font-size: 13px; font-weight: 700; }
   .stats-row { display: flex; justify-content: space-between; margin-bottom: 24px; }
   .stat-label { font-size: 11px; font-weight: 600; color: #9aa0a8; margin: 0 0 4px; }
   .stat-value { font-size: 20px; font-weight: 700; margin: 0; }
@@ -81,6 +86,9 @@ export function renderDashboardHtml(token: string): string {
 
   <p id="currentCost">&mdash;</p>
   <p id="currentDetail">&mdash;</p>
+
+  <p id="upcomingLabel">NEXT UP</p>
+  <div class="upcoming-row" id="upcomingRow"></div>
 
   <div class="stats-row">
     <div>
@@ -111,6 +119,7 @@ export function renderDashboardHtml(token: string): string {
 
   var currentCostEl = document.getElementById("currentCost");
   var currentDetailEl = document.getElementById("currentDetail");
+  var upcomingRowEl = document.getElementById("upcomingRow");
   var lastHourCostEl = document.getElementById("lastHourCost");
   var todayCostEl = document.getElementById("todayCost");
   var monthCostEl = document.getElementById("monthCost");
@@ -153,6 +162,28 @@ export function renderDashboardHtml(token: string): string {
   }
 
   var HOUR_LABEL_INTERVAL = 3;
+  var UPCOMING_SLOT_COUNT = 6;
+
+  function renderUpcoming(rates) {
+    upcomingRowEl.innerHTML = "";
+    (rates || []).slice(0, UPCOMING_SLOT_COUNT).forEach(function (rate) {
+      var chip = document.createElement("div");
+      chip.className = "upcoming-chip";
+
+      var time = document.createElement("span");
+      time.className = "time";
+      time.textContent = formatTime(rate.validFrom);
+
+      var price = document.createElement("span");
+      price.className = "price";
+      price.textContent = Math.round(rate.pencePerKwh) + "p";
+      price.style.color = colorForRate(rate.pencePerKwh);
+
+      chip.appendChild(time);
+      chip.appendChild(price);
+      upcomingRowEl.appendChild(chip);
+    });
+  }
 
   function drawChart(buckets) {
     var width = canvas.width;
@@ -202,6 +233,8 @@ export function renderDashboardHtml(token: string): string {
     currentCostEl.style.color = colorForRate(status.currentRate.pencePerKwh);
     currentDetailEl.textContent =
       Number(status.currentDemandKw).toFixed(2) + " kW @ " + formatPence(status.currentRate.pencePerKwh) + "/kWh";
+
+    renderUpcoming(status.upcomingRates);
 
     lastHourCostEl.textContent = formatPounds(status.lastHourCostGbp || 0);
     todayCostEl.textContent = formatPounds(status.todayTotalCostGbp);

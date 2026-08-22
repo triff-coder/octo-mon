@@ -130,6 +130,10 @@ You should get back JSON like:
     { "hourStart": "2026-08-20T15:00:00.000Z", "costGbp": 0.18, "weeklyAvgCostGbp": 0.22 },
     { "hourStart": "2026-08-20T16:00:00.000Z", "costGbp": 0.24, "weeklyAvgCostGbp": 0.19 }
   ],
+  "upcomingRates": [
+    { "pencePerKwh": 26.4, "validFrom": "2026-08-21T14:30:00Z", "validTo": "2026-08-21T15:00:00Z" },
+    { "pencePerKwh": 28.8, "validFrom": "2026-08-21T15:00:00Z", "validTo": "2026-08-21T15:30:00Z" }
+  ],
   "stale": false,
   "snapshotAgeSeconds": 42
 }
@@ -158,6 +162,11 @@ backfill, so both the hourly chart and the weekly averages fill in gradually
 — the chart takes 24 hours to fully populate, and the weekly-average marks
 take a further 7 days to become meaningful (they're 0/absent until then).
 
+`upcomingRates` lists the next few published Agile half-hourly rates after
+`currentRate`, earliest first — usually 6 (3 hours), though it's shorter near
+the end of the day if Octopus hasn't published tomorrow's rates yet (they
+typically appear from mid-afternoon).
+
 If it's the very first request, the Worker computes live (a bit slower); after
 that, the 5-minute cron keeps a warm snapshot so requests are fast.
 
@@ -167,10 +176,11 @@ that, the 5-minute cron keeps a warm snapshot so requests are fast.
 https://octo-mon.<your-subdomain>.workers.dev/dashboard?token=<your WIDGET_SHARED_SECRET>
 ```
 
-A plain browser page showing the same information as the large widget
-(current £/hr, last hour/today/this month, and the 24-hour chart with 7-day
-average marks and 3-hourly time labels) — bookmark it, or open it any time
-you want a reading that's more current than the widget. It's not subject to iOS's home-screen widget
+A plain browser page showing the same information as the medium/large widget
+(current £/hr, upcoming Agile rates, last hour/today/this month, and the
+24-hour chart with 7-day average marks and 3-hourly time labels) — bookmark
+it, or open it any time you want a reading that's more current than the
+widget. It's not subject to iOS's home-screen widget
 refresh throttling: every 30 seconds (and on every page load/reload) it calls
 `/status?refresh=true`, which skips the cached snapshot and fetches live from
 Octopus — so what you see is never older than your Home Mini's own last
@@ -215,17 +225,22 @@ npm test
    miniature next to the current-usage numbers, large full-width); small
    sticks to just current £/hr and today's total — there's no room for more.
 
-The widget shows current £/hr (colour-coded by rate band) and today's running
-total on every size. Medium and large widgets add last hour's cost and this
-month's running total as extra columns, plus a 24-hour bar chart — medium
-fits a miniature version next to the current-usage numbers, large gets a
-full-width one underneath the stats row. Each bar also carries a small mark
-at that hour-of-day's 7-day average, so you can see whether the current hour
-is running above or below what's typical. The medium widget's mini chart
-also labels every 3rd bar with its local clock hour, so it reads as a time
-axis rather than 24 unlabeled bars. If the Worker is briefly unreachable, it
-falls back to the last successfully fetched data and shows a "STALE" badge
-with the time it's stale since, rather than going blank.
+The widget shows current £/hr (colour-coded green under 15p, amber 15-30p,
+red 30p+ — Agile evening peaks routinely clear 30p even though the whole-day
+average sits much lower, so red is expected for a several-hour block most
+evenings, not a bug) and today's running total on every size. Medium and
+large widgets add last hour's cost and this month's running total as extra
+columns, plus a 24-hour bar chart — medium fits a miniature version next to
+the current-usage numbers, large gets a full-width one underneath the stats
+row. Each bar also carries a small mark at that hour-of-day's 7-day average,
+so you can see whether the current hour is running above or below what's
+typical, and every 3rd bar is labelled with its local clock hour so the
+chart reads as a time axis rather than 24 unlabeled bars. The medium widget
+also lists the next few upcoming Agile rates (same colour coding) between
+the current-usage numbers and the mini chart, so you can see at a glance
+whether prices are about to rise or fall. If the Worker is briefly
+unreachable, it falls back to the last successfully fetched data and shows a
+"STALE" badge with the time it's stale since, rather than going blank.
 
 Tapping the widget opens the [web dashboard](#web-dashboard) in Safari —
 useful exactly when the widget looks out of date, since the dashboard forces

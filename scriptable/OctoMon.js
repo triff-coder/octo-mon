@@ -277,7 +277,8 @@ function buildStatusWidget(status, stale, dashboardUrl) {
   if (config.widgetFamily === "medium" && hourlyBuckets.length > 0) {
     // Medium doesn't have room for a full-width chart below the stats row
     // (that's what large size is for), but there's spare width up top next
-    // to the current-usage numbers — a miniature chart fits nicely there.
+    // to the current-usage numbers — a miniature chart fits nicely there,
+    // with a compact "next few slots" list between the two.
     const topRow = widget.addStack();
     topRow.layoutHorizontally();
     topRow.centerAlignContent();
@@ -288,7 +289,26 @@ function buildStatusWidget(status, stale, dashboardUrl) {
 
     topRow.addSpacer();
 
-    const miniChartWidth = 120;
+    const upcomingRates = Array.isArray(status.upcomingRates) ? status.upcomingRates : [];
+    if (upcomingRates.length > 0) {
+      const upcomingColumn = topRow.addStack();
+      upcomingColumn.layoutVertically();
+      upcomingColumn.spacing = 1;
+
+      const upcomingLabel = upcomingColumn.addText("NEXT");
+      upcomingLabel.font = Font.mediumSystemFont(8);
+      upcomingLabel.textColor = Color.gray();
+
+      upcomingRates.slice(0, 3).forEach((rate) => {
+        const row = upcomingColumn.addText(`${formatTime(rate.validFrom)} ${Math.round(rate.pencePerKwh)}p`);
+        row.font = Font.systemFont(9);
+        row.textColor = colorForRate(rate.pencePerKwh);
+      });
+
+      topRow.addSpacer();
+    }
+
+    const miniChartWidth = 100;
     const miniChartHourLabelInterval = 3;
     const miniChartHeight = 46 + 12; // bars + a labeled-every-3-hours axis strip
     const miniChartImage = buildHourlyChartImage(

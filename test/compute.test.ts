@@ -539,6 +539,108 @@ describe("computeStatus", () => {
   });
 });
 
+describe("computeStatus upcomingRates", () => {
+  function slot(pence: number, validFrom: string, validTo: string) {
+    return {
+      value_exc_vat: pence / 1.05,
+      value_inc_vat: pence,
+      valid_from: validFrom,
+      valid_to: validTo,
+      payment_method: "DIRECT_DEBIT",
+    };
+  }
+
+  // now = 2026-01-20T..., the billing period's own start day, so
+  // resolveMonthAccumulator has nothing to backfill and never touches the
+  // consumption endpoint (kept out of these fetch mocks for that reason).
+  function stubRatesFetch(byDate: Record<string, ReturnType<typeof slot>[] | "not_found">) {
+    return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input.toString();
+      if (url.includes("/graphql/")) {
+        const body = JSON.parse((init?.body as string) ?? "{}") as { query: string };
+        if (body.query.includes("obtainKrakenToken")) {
+          return jsonResponse({ data: { obtainKrakenToken: { token: "jwt-1" } } });
+        }
+        if (body.query.includes("smartMeterTelemetry")) {
+          return jsonResponse({ data: { smartMeterTelemetry: [] } });
+        }
+      }
+      if (url.includes("/standard-unit-rates/")) {
+        const periodFrom = new URL(url).searchParams.get("period_from") ?? "";
+        const dateKey = periodFrom.slice(0, 10);
+        const results = byDate[dateKey];
+        if (results === "not_found" || !results) {
+          return new Response("not found", { status: 404 });
+        }
+        return jsonResponse({ count: results.length, next: null, previous: null, results });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+  }
+
+  it("returns the next rates after now, sorted ascending and capped at 6", async () => {
+    const todaySlots = [
+      slot(10, "2026-01-20T09:30:00Z", "2026-01-20T10:00:00Z"),
+      slot(11, "2026-01-20T10:00:00Z", "2026-01-20T10:30:00Z"), // current
+      slot(12, "2026-01-20T10:30:00Z", "2026-01-20T11:00:00Z"),
+      slot(13, "2026-01-20T11:00:00Z", "2026-01-20T11:30:00Z"),
+      slot(14, "2026-01-20T11:30:00Z", "2026-01-20T12:00:00Z"),
+      slot(15, "2026-01-20T12:00:00Z", "2026-01-20T12:30:00Z"),
+      slot(16, "2026-01-20T12:30:00Z", "2026-01-20T13:00:00Z"),
+      slot(17, "2026-01-20T13:00:00Z", "2026-01-20T13:30:00Z"),
+    ];
+    vi.stubGlobal("fetch", stubRatesFetch({ "2026-01-20": todaySlots }));
+
+    const now = new Date("2026-01-20T10:15:00Z"); // within the 10:00-10:30 slot
+    const { status } = await computeStatus(testEnv, null, null, null, now);
+
+    expect(status.upcomingRates.map((r) => r.pencePerKwh)).toEqual([12, 13, 14, 15, 16, 17]);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("tops up from tomorrow's rates when fewer than 6 remain later in the day", async () => {
+    const todaySlots = [
+      slot(20, "2026-01-20T22:30:00Z", "2026-01-20T23:00:00Z"),
+      slot(21, "2026-01-20T23:00:00Z", "2026-01-20T23:30:00Z"), // current
+      slot(22, "2026-01-20T23:30:00Z", "2026-01-21T00:00:00Z"),
+    ];
+    const tomorrowSlots = [
+      slot(23, "2026-01-21T00:00:00Z", "2026-01-21T00:30:00Z"),
+      slot(24, "2026-01-21T00:30:00Z", "2026-01-21T01:00:00Z"),
+      slot(25, "2026-01-21T01:00:00Z", "2026-01-21T01:30:00Z"),
+      slot(26, "2026-01-21T01:30:00Z", "2026-01-21T02:00:00Z"),
+      slot(27, "2026-01-21T02:00:00Z", "2026-01-21T02:30:00Z"),
+    ];
+    vi.stubGlobal("fetch", stubRatesFetch({ "2026-01-20": todaySlots, "2026-01-21": tomorrowSlots }));
+
+    const now = new Date("2026-01-20T23:15:00Z"); // within the 23:00-23:30 slot
+    const { status } = await computeStatus(testEnv, null, null, null, now);
+
+    expect(status.upcomingRates.map((r) => r.pencePerKwh)).toEqual([22, 23, 24, 25, 26, 27]);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("falls back to just today's remaining rates when tomorrow's aren't published yet", async () => {
+    const todaySlots = [
+      slot(20, "2026-01-20T23:00:00Z", "2026-01-20T23:30:00Z"), // current
+      slot(21, "2026-01-20T23:30:00Z", "2026-01-21T00:00:00Z"),
+    ];
+    vi.stubGlobal(
+      "fetch",
+      stubRatesFetch({ "2026-01-20": todaySlots, "2026-01-21": "not_found" }),
+    );
+
+    const now = new Date("2026-01-20T23:15:00Z");
+    const { status } = await computeStatus(testEnv, null, null, null, now);
+
+    expect(status.upcomingRates.map((r) => r.pencePerKwh)).toEqual([21]);
+
+    vi.unstubAllGlobals();
+  });
+});
+
 describe("computeStatus month/today invariant", () => {
   it("floors this month's total to at least today's, since today is always a subset of the billing period", async () => {
     vi.stubGlobal(
@@ -740,6 +842,7 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       monthBackfillError: null,
       lastHourCostGbp: 0.4,
       hourlyBuckets: [],
+      upcomingRates: [],
       stale: false,
       snapshotAgeSeconds: 0,
     };
@@ -774,6 +877,7 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       monthBackfillError: null,
       lastHourCostGbp: 0.4,
       hourlyBuckets: [],
+      upcomingRates: [],
       stale: false,
       snapshotAgeSeconds: 0,
     };
@@ -825,6 +929,7 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       monthBackfillError: null,
       lastHourCostGbp: 0.4,
       hourlyBuckets: [],
+      upcomingRates: [],
       stale: false,
       snapshotAgeSeconds: 0,
     };

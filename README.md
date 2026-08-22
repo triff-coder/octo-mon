@@ -225,6 +225,10 @@ is running above or below what's typical. If the Worker is briefly
 unreachable, it falls back to the last successfully fetched data and shows a
 "STALE" badge with the time it's stale since, rather than going blank.
 
+Tapping the widget opens the [web dashboard](#web-dashboard) in Safari —
+useful exactly when the widget looks out of date, since the dashboard forces
+a live refresh rather than showing whatever iOS last let it cache.
+
 **On refresh frequency:** the Worker itself refreshes every 5 minutes, but
 the widget won't visibly update that often. iOS throttles home-screen widget
 refreshes for battery life, independent of any app's own code — this is a

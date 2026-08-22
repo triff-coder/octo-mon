@@ -111,6 +111,14 @@ async function getConfig() {
   return { workerUrl, sharedSecret };
 }
 
+// The web dashboard (GET /dashboard) shows the same data as the large
+// widget but forces a live refresh on every load, so it's a better tap
+// target than linking straight to the raw /status JSON endpoint.
+function dashboardUrlFor(workerUrl, sharedSecret) {
+  const base = workerUrl.replace(/\/status\/?$/, "");
+  return `${base}/dashboard?token=${encodeURIComponent(sharedSecret)}`;
+}
+
 async function fetchStatus(workerUrl, sharedSecret) {
   const url = `${workerUrl}?token=${encodeURIComponent(sharedSecret)}`;
   const req = new Request(url);
@@ -204,10 +212,11 @@ function buildHourlyChartImage(buckets, width, height) {
   return dc.getImage();
 }
 
-function buildStatusWidget(status, stale) {
+function buildStatusWidget(status, stale, dashboardUrl) {
   const widget = new ListWidget();
   widget.backgroundColor = new Color("#111318");
   widget.setPadding(12, 14, 12, 14);
+  if (dashboardUrl) widget.url = dashboardUrl;
 
   const header = widget.addStack();
   header.centerAlignContent();
@@ -353,12 +362,22 @@ async function run() {
 
   try {
     const { workerUrl, sharedSecret } = await getConfig();
-    const status = await fetchStatus(workerUrl, sharedSecret);
-    saveCachedStatus(status);
-    widget = buildStatusWidget(status, status.stale === true);
-  } catch (error) {
-    const cached = loadCachedStatus();
-    widget = cached ? buildStatusWidget(cached, true) : buildErrorWidget(String(error.message ?? error));
+    const dashboardUrl = dashboardUrlFor(workerUrl, sharedSecret);
+
+    try {
+      const status = await fetchStatus(workerUrl, sharedSecret);
+      saveCachedStatus(status);
+      widget = buildStatusWidget(status, status.stale === true, dashboardUrl);
+    } catch (fetchError) {
+      const cached = loadCachedStatus();
+      widget = cached
+        ? buildStatusWidget(cached, true, dashboardUrl)
+        : buildErrorWidget(String(fetchError.message ?? fetchError));
+    }
+  } catch (configError) {
+    // Not configured yet (widget context, never set up in-app) — no
+    // workerUrl/sharedSecret to build a dashboard link from.
+    widget = buildErrorWidget(String(configError.message ?? configError));
   }
 
   if (config.runsInWidget) {

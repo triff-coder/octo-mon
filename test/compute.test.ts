@@ -14,12 +14,12 @@ import {
   persistComputedStatus,
 } from "../src/compute";
 import type {
-  AgileRate,
   Env,
   HourBucketsState,
   MonthAccumulator,
   StatusResponse,
   TodayAccumulator,
+  UnitRate,
 } from "../src/types";
 
 const testEnv = env as unknown as Env;
@@ -111,7 +111,7 @@ beforeEach(async () => {
 });
 
 describe("findRateForInstant", () => {
-  const rates: AgileRate[] = [
+  const rates: UnitRate[] = [
     { pencePerKwh: 20, validFrom: "2026-01-15T10:00:00Z", validTo: "2026-01-15T10:30:00Z" },
     { pencePerKwh: 25, validFrom: "2026-01-15T10:30:00Z", validTo: "2026-01-15T11:00:00Z" },
   ];
@@ -128,7 +128,7 @@ describe("findRateForInstant", () => {
 });
 
 describe("advanceTodayAccumulator", () => {
-  const rates: AgileRate[] = [
+  const rates: UnitRate[] = [
     { pencePerKwh: 20, validFrom: "2026-01-15T10:00:00Z", validTo: "2026-01-15T10:30:00Z" },
   ];
   const ratesByDay = new Map([["2026-01-15", rates]]);
@@ -216,7 +216,7 @@ describe("advanceTodayAccumulator", () => {
 });
 
 describe("advanceMonthAccumulator", () => {
-  const rates: AgileRate[] = [
+  const rates: UnitRate[] = [
     { pencePerKwh: 20, validFrom: "2026-01-15T10:00:00Z", validTo: "2026-01-15T10:30:00Z" },
   ];
   const ratesByDay = new Map([["2026-01-15", rates]]);
@@ -272,7 +272,7 @@ describe("advanceMonthAccumulator", () => {
 });
 
 describe("advanceHourBuckets", () => {
-  const rates: AgileRate[] = [
+  const rates: UnitRate[] = [
     { pencePerKwh: 20, validFrom: "2026-01-15T10:00:00Z", validTo: "2026-01-15T11:30:00Z" },
   ];
   const ratesByDay = new Map([["2026-01-15", rates]]);

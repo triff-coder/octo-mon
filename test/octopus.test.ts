@@ -1,10 +1,10 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  fetchAgileRatesForDay,
   fetchHistoricalConsumption,
   fetchPlannedDispatches,
   fetchTelemetry,
+  fetchUnitRatesForDay,
   obtainKrakenJwt,
 } from "../src/octopus";
 import type { Env } from "../src/types";
@@ -141,11 +141,11 @@ describe("fetchTelemetry", () => {
   });
 });
 
-describe("fetchAgileRatesForDay", () => {
+describe("fetchUnitRatesForDay", () => {
   it("fetches, normalizes, sorts, and drops the open-ended rate", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(ratesFixture)));
 
-    const rates = await fetchAgileRatesForDay(testEnv, "2026-01-15");
+    const rates = await fetchUnitRatesForDay(testEnv, "2026-01-15");
 
     expect(rates).toEqual([
       { pencePerKwh: 21.0, validFrom: "2026-01-14T23:00:00Z", validTo: "2026-01-14T23:30:00Z" },
@@ -158,8 +158,8 @@ describe("fetchAgileRatesForDay", () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(ratesFixture));
     vi.stubGlobal("fetch", fetchMock);
 
-    await fetchAgileRatesForDay(testEnv, "2026-01-15");
-    await fetchAgileRatesForDay(testEnv, "2026-01-15");
+    await fetchUnitRatesForDay(testEnv, "2026-01-15");
+    await fetchUnitRatesForDay(testEnv, "2026-01-15");
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -168,7 +168,7 @@ describe("fetchAgileRatesForDay", () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(ratesFixture));
     vi.stubGlobal("fetch", fetchMock);
 
-    await fetchAgileRatesForDay(testEnv, "2026-01-15");
+    await fetchUnitRatesForDay(testEnv, "2026-01-15");
 
     const [url] = fetchMock.mock.calls[0] as [string];
     expect(url).toContain(

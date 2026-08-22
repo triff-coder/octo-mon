@@ -12,8 +12,8 @@ export interface Env {
   WIDGET_SHARED_SECRET: string;
 }
 
-/** A single published Agile half-hourly unit rate. */
-export interface AgileRate {
+/** A single published unit rate for a validity window (from Octopus's standard-unit-rates endpoint — any tariff, not just Agile). */
+export interface UnitRate {
   pencePerKwh: number;
   validFrom: string;
   validTo: string;
@@ -115,7 +115,7 @@ export interface StatusResponse {
    * not just shorter near the end of the day. Also empty on a tariff/account
    * with no dispatch mechanism at all.
    */
-  nextAgileSlots: AgileRate[];
+  nextAgileSlots: UnitRate[];
   stale: boolean;
   snapshotAgeSeconds: number;
 }

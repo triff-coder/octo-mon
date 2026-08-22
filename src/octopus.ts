@@ -1,6 +1,6 @@
 import { addDaysToDateKey, londonMidnightUtc } from "./time";
 import { getJson, putJson } from "./cache";
-import type { AgileRate, ConsumptionInterval, Env, KrakenJwtCache, TelemetryPoint } from "./types";
+import type { ConsumptionInterval, Env, KrakenJwtCache, TelemetryPoint, UnitRate } from "./types";
 
 const GRAPHQL_ENDPOINT = "https://api.octopus.energy/v1/graphql/";
 const REST_BASE = "https://api.octopus.energy/v1";
@@ -210,14 +210,15 @@ interface RatesPage {
 const MAX_RATE_PAGES = 5;
 
 /**
- * Fetches and caches the published Agile standard unit rates covering the
- * Europe/London calendar day identified by `dateKey`. Rates for a day are
- * immutable once published, so this is cached in KV for hours rather than
- * seconds.
+ * Fetches and caches the published standard unit rates covering the
+ * Europe/London calendar day identified by `dateKey` — works for any
+ * Octopus tariff (Agile's half-hourly rates, a fixed-rate tariff, etc.),
+ * not just Agile specifically. Rates for a day are immutable once
+ * published, so this is cached in KV for hours rather than seconds.
  */
-export async function fetchAgileRatesForDay(env: Env, dateKey: string): Promise<AgileRate[]> {
+export async function fetchUnitRatesForDay(env: Env, dateKey: string): Promise<UnitRate[]> {
   const cacheKey = `rates:${dateKey}`;
-  const cached = await getJson<AgileRate[]>(env.OCTOMON_KV, cacheKey);
+  const cached = await getJson<UnitRate[]>(env.OCTOMON_KV, cacheKey);
   if (cached) return cached;
 
   const periodFrom = londonMidnightUtc(dateKey).toISOString();
@@ -238,7 +239,7 @@ export async function fetchAgileRatesForDay(env: Env, dateKey: string): Promise<
     url = body.next;
   }
 
-  const rates: AgileRate[] = results
+  const rates: UnitRate[] = results
     .filter((r): r is RawRateEntry & { valid_to: string } => r.valid_to !== null)
     .map((r) => ({
       pencePerKwh: r.value_inc_vat,

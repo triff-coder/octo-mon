@@ -1,9 +1,9 @@
 import { getJson, putJson } from "./cache";
 import {
-  fetchAgileRatesForDay,
   fetchHistoricalConsumption,
   fetchPlannedDispatches,
   fetchTelemetry,
+  fetchUnitRatesForDay,
   obtainKrakenJwt,
 } from "./octopus";
 import type { DispatchWindow } from "./octopus";
@@ -19,7 +19,7 @@ import {
   secondsBetween,
 } from "./time";
 import type {
-  AgileRate,
+  UnitRate,
   Env,
   HourBucketsState,
   MonthAccumulator,
@@ -49,8 +49,8 @@ const UPCOMING_RATE_COUNT = 6;
 // returning nothing (see the fetchSince comment in computeStatus).
 const MAX_TELEMETRY_FETCH_HOURS = 6;
 
-/** Finds the Agile rate whose validity window contains `instant`. */
-export function findRateForInstant(rates: AgileRate[], instant: Date): AgileRate | null {
+/** Finds the unit rate whose validity window contains `instant`. */
+export function findRateForInstant(rates: UnitRate[], instant: Date): UnitRate | null {
   const t = instant.getTime();
   return (
     rates.find((r) => new Date(r.validFrom).getTime() <= t && t < new Date(r.validTo).getTime()) ??
@@ -60,7 +60,7 @@ export function findRateForInstant(rates: AgileRate[], instant: Date): AgileRate
 
 /**
  * Applies newly-fetched telemetry points to the running "today" accumulator,
- * pricing each point's consumption at the Agile rate in effect when it was
+ * pricing each point's consumption at the unit rate in effect when it was
  * read. Points at or before `accumulator.lastReadingAt` are ignored so a
  * point already applied by a previous tick is never double-counted. Rolls
  * the accumulator over to a fresh day when the local calendar date changes.
@@ -68,7 +68,7 @@ export function findRateForInstant(rates: AgileRate[], instant: Date): AgileRate
 export function advanceTodayAccumulator(
   accumulator: TodayAccumulator | null,
   points: { readAt: string; consumptionDeltaKwh: number }[],
-  ratesByDay: Map<string, AgileRate[]>,
+  ratesByDay: Map<string, UnitRate[]>,
   now: Date,
 ): TodayAccumulator {
   const todayKey = londonDateKey(now);
@@ -107,7 +107,7 @@ export function advanceTodayAccumulator(
 export function advanceMonthAccumulator(
   accumulator: MonthAccumulator | null,
   points: { readAt: string; consumptionDeltaKwh: number }[],
-  ratesByDay: Map<string, AgileRate[]>,
+  ratesByDay: Map<string, UnitRate[]>,
   now: Date,
 ): MonthAccumulator {
   const periodKey = billingPeriodKey(now);
@@ -148,7 +148,7 @@ export function advanceMonthAccumulator(
 export function advanceHourBuckets(
   state: HourBucketsState | null,
   points: { readAt: string; consumptionDeltaKwh: number }[],
-  ratesByDay: Map<string, AgileRate[]>,
+  ratesByDay: Map<string, UnitRate[]>,
   now: Date,
 ): HourBucketsState {
   const st: HourBucketsState = state
@@ -256,7 +256,7 @@ async function backfillMonthAccumulator(env: Env, now: Date): Promise<MonthAccum
   }
 
   const intervals = await fetchHistoricalConsumption(env, periodStart, todayStart);
-  const ratesCache = new Map<string, AgileRate[]>();
+  const ratesCache = new Map<string, UnitRate[]>();
 
   let kwhSoFar = 0;
   let costGbpSoFar = 0;
@@ -267,7 +267,7 @@ async function backfillMonthAccumulator(env: Env, now: Date): Promise<MonthAccum
 
     let rates = ratesCache.get(dayKey);
     if (!rates) {
-      rates = await fetchAgileRatesForDay(env, dayKey);
+      rates = await fetchUnitRatesForDay(env, dayKey);
       ratesCache.set(dayKey, rates);
     }
 
@@ -343,9 +343,9 @@ async function resolveMonthAccumulator(
 async function resolveNextAgileSlots(
   env: Env,
   jwt: string,
-  todayRates: AgileRate[],
+  todayRates: UnitRate[],
   now: Date,
-): Promise<AgileRate[]> {
+): Promise<UnitRate[]> {
   let dispatches: DispatchWindow[];
   try {
     dispatches = await fetchPlannedDispatches(env, jwt);
@@ -357,7 +357,7 @@ async function resolveNextAgileSlots(
   const offPeakRate = Math.min(...todayRates.map((r) => r.pencePerKwh));
   const nowMs = now.getTime();
 
-  const slots: AgileRate[] = [];
+  const slots: UnitRate[] = [];
   for (const dispatch of dispatches) {
     if (slots.length >= UPCOMING_RATE_COUNT) break;
 
@@ -403,8 +403,8 @@ export async function computeStatus(
   const jwt = await obtainKrakenJwt(env, now);
 
   const todayKey = londonDateKey(now);
-  const todayRates = await fetchAgileRatesForDay(env, todayKey);
-  const ratesByDay = new Map<string, AgileRate[]>([[todayKey, todayRates]]);
+  const todayRates = await fetchUnitRatesForDay(env, todayKey);
+  const ratesByDay = new Map<string, UnitRate[]>([[todayKey, todayRates]]);
 
   const { accumulator: resolvedMonthAccumulator, backfillError } = await resolveMonthAccumulator(
     env,

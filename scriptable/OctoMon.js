@@ -159,10 +159,14 @@ function formatTime(isoString) {
   return new Date(isoString).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+// Low/medium/high cost bands. Tuned for a mixed fleet of tariffs rather
+// than Agile's fine-grained half-hourly swings alone — e.g. Intelligent
+// Octopus Go's ~7p off-peak rate reads as low, its ~28p day rate as high,
+// leaving a mid band free for anything in between.
 function colorForRate(pencePerKwh) {
-  if (pencePerKwh < 15) return new Color("#4CAF50");
-  if (pencePerKwh < 30) return new Color("#FFA726");
-  return new Color("#EF5350");
+  if (pencePerKwh < 10) return new Color("#4CAF50"); // low
+  if (pencePerKwh < 20) return new Color("#FFA726"); // medium
+  return new Color("#EF5350"); // high
 }
 
 // The local (Europe/London) clock hour for a bucket's UTC hourStart, e.g.

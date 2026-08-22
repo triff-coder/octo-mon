@@ -142,10 +142,12 @@ export function renderDashboardHtml(token: string): string {
     return Number(value).toFixed(1) + "p";
   }
 
+  // Low/medium/high cost bands -- mirrors scriptable/OctoMon.js's
+  // colorForRate exactly (see CLAUDE.md).
   function colorForRate(pencePerKwh) {
-    if (pencePerKwh < 15) return "#4CAF50";
-    if (pencePerKwh < 30) return "#FFA726";
-    return "#EF5350";
+    if (pencePerKwh < 10) return "#4CAF50"; // low
+    if (pencePerKwh < 20) return "#FFA726"; // medium
+    return "#EF5350"; // high
   }
 
   function formatTime(isoString) {

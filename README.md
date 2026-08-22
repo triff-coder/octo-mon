@@ -2,8 +2,10 @@
 
 An iPhone home-screen widget (built with [Scriptable](https://scriptable.app/)) showing:
 
-- **Current cost**: live demand from your Octopus Home Mini × the current Octopus
-  Agile unit rate, as £/hr
+- **Current cost**: live demand from your Octopus Home Mini × the current
+  Octopus unit rate, as £/hr — works with any Octopus electricity tariff
+  (Agile, Intelligent Octopus Go, a plain fixed rate, ...), configured via
+  your product/tariff codes
 - **Last hour's cost**: spend in the most recently completed clock hour, in £
 - **Today's total**: running spend so far today, in £
 - **This month's total**: running spend since the start of the current Octopus
@@ -23,15 +25,19 @@ the widget polls, protected by a shared-secret token.
 
 ```
 Octopus Kraken GraphQL API (live telemetry)  ─┐
-Octopus REST API (Agile unit rates)          ─┼─▶ Cloudflare Worker ─▶ Scriptable widget
+Octopus REST API (unit rates)                ─┼─▶ Cloudflare Worker ─▶ Scriptable widget
                                                │      (cron + KV)         (iPhone home screen)
 ```
 
 - Live consumption comes from the Kraken GraphQL API's `smartMeterTelemetry`
   query for your Home Mini's device id, not the older half-hourly REST
   consumption endpoint (which lags too much to be "current").
-- Agile unit rates come from the standard REST rates endpoint
-  (`/products/{product_code}/electricity-tariffs/{tariff_code}/standard-unit-rates/`).
+- Unit rates come from the standard REST rates endpoint
+  (`/products/{product_code}/electricity-tariffs/{tariff_code}/standard-unit-rates/`),
+  which works the same for any Octopus tariff — set `OCTOPUS_PRODUCT_CODE` /
+  `OCTOPUS_TARIFF_CODE` to whatever's actually on your account (check your
+  [account dashboard](https://octopus.energy/dashboard/) — don't assume it's
+  Agile just because that's this project's most common use case).
 - A Cron Trigger runs every 5 minutes, pricing new telemetry against the rate
   in effect at the time and accumulating it into a "today" total that resets
   at local (Europe/London) midnight.
@@ -68,11 +74,24 @@ curl -s https://api.octopus.energy/v1/graphql/ \
 
 The `deviceId` in the response is your `OCTOPUS_DEVICE_ID`.
 
-You'll also need your Agile **product code** and **tariff code** (e.g.
-`AGILE-24-10-01` / `E-1R-AGILE-24-10-01-{region letter}`) — these are visible on
-your account's tariff details, or check https://api.octopus.energy/v1/products/
-for the current Agile product. Octopus periodically rolls new Agile product
-versions, so revisit this occasionally.
+You'll also need your **product code** and **tariff code** (e.g.
+`AGILE-24-10-01` / `E-1R-AGILE-24-10-01-{region letter}` for Agile,
+`INTELLI-VAR-24-10-29` / `E-1R-INTELLI-VAR-24-10-29-{region letter}` for
+Intelligent Octopus Go). Don't assume which tariff you're on — verify it
+directly against your account rather than guessing from what you signed up
+for originally (accounts do get migrated to newer product versions):
+
+```bash
+curl -s https://api.octopus.energy/v1/graphql/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: JWT <TOKEN_FROM_STEP_1>" \
+  -d '{"query":"query($accountNumber:String!){account(accountNumber:$accountNumber){electricityAgreements(active:true){tariff{... on StandardTariff{tariffCode productCode displayName} ... on DayNightTariff{tariffCode productCode displayName} ... on ThreeRateTariff{tariffCode productCode displayName} ... on HalfHourlyTariff{tariffCode productCode displayName}}}}}","variables":{"accountNumber":"<YOUR_ACCOUNT_NUMBER>"}}'
+```
+
+`productCode` and `tariffCode` in the response are exactly what
+`OCTOPUS_PRODUCT_CODE`/`OCTOPUS_TARIFF_CODE` want. Octopus periodically rolls
+new product versions even for the same named tariff, so it's worth
+re-checking this occasionally rather than assuming it never changes.
 
 ## 2. Deploy the Cloudflare Worker
 
@@ -189,7 +208,7 @@ refresh throttling: every 30 seconds (and on every page load/reload) it calls
 Octopus — so what you see is never older than your Home Mini's own last
 report, not bounded by the 5-minute cron either. That costs a bit of latency
 per request (typically well under a second, since the Kraken auth token and
-the day's Agile rates are both already cached — only the telemetry reading
+the day's unit rates are both already cached — only the telemetry reading
 itself is fetched fresh each time) in exchange for accuracy. Octopus doesn't
 publish a hard rate limit for this API, and a single lightweight request
 every 30 seconds from one personal script is well within normal use.
@@ -228,10 +247,9 @@ npm test
    miniature next to the current-usage numbers, large full-width); small
    sticks to just current £/hr and today's total — there's no room for more.
 
-The widget shows current £/hr (colour-coded green under 15p, amber 15-30p,
-red 30p+ — Agile evening peaks routinely clear 30p even though the whole-day
-average sits much lower, so red is expected for a several-hour block most
-evenings, not a bug) and today's running total on every size. Medium and
+The widget shows current £/hr (colour-coded low/medium/high: green under
+10p, amber 10-20p, red 20p+) and today's running total on every size. Medium
+and
 large widgets add last hour's cost and this month's running total as extra
 columns, plus a 24-hour bar chart — medium fits a miniature version next to
 the current-usage numbers, large gets a full-width one underneath the stats

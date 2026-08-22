@@ -1,8 +1,11 @@
 # octo-mon
 
-Cloudflare Worker + Scriptable iPhone widget showing Octopus Energy Agile
-tariff usage costs from a Home Mini smart meter. See README.md for the full
-architecture and setup guide.
+Cloudflare Worker + Scriptable iPhone widget showing Octopus Energy usage
+costs from a Home Mini smart meter. Works with any Octopus electricity
+tariff (Agile, Intelligent Octopus Go, a fixed rate, ...) via configurable
+product/tariff codes — don't assume the account is on Agile specifically;
+verify against the account's own tariff before relying on that assumption.
+See README.md for the full architecture and setup guide.
 
 ## Keep the medium widget and the web dashboard in sync
 
@@ -28,4 +31,7 @@ cleanly; use judgement about which one the dashboard should mirror.
 Concretely: the medium mini chart in `buildHourlyChartImage` (JS,
 `scriptable/OctoMon.js`) and `drawChart` (JS, `src/dashboard.ts`) should be
 kept in step — same bar/mark logic, same hour-label interval — resized for
-each surface's own dimensions rather than copy-pasted verbatim.
+each surface's own dimensions rather than copy-pasted verbatim. Likewise
+`colorForRate` (the low/medium/high £/hr colour bands) is duplicated in both
+files and must stay numerically identical — change the thresholds in one,
+change them in the other.

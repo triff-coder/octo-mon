@@ -221,9 +221,11 @@ month's running total as extra columns, plus a 24-hour bar chart — medium
 fits a miniature version next to the current-usage numbers, large gets a
 full-width one underneath the stats row. Each bar also carries a small mark
 at that hour-of-day's 7-day average, so you can see whether the current hour
-is running above or below what's typical. If the Worker is briefly
-unreachable, it falls back to the last successfully fetched data and shows a
-"STALE" badge with the time it's stale since, rather than going blank.
+is running above or below what's typical. The medium widget's mini chart
+also labels every 3rd bar with its local clock hour, so it reads as a time
+axis rather than 24 unlabeled bars. If the Worker is briefly unreachable, it
+falls back to the last successfully fetched data and shows a "STALE" badge
+with the time it's stale since, rather than going blank.
 
 Tapping the widget opens the [web dashboard](#web-dashboard) in Safari —
 useful exactly when the widget looks out of date, since the dashboard forces

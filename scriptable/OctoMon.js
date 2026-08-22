@@ -165,13 +165,32 @@ function colorForRate(pencePerKwh) {
   return new Color("#EF5350");
 }
 
+// The local (Europe/London) clock hour for a bucket's UTC hourStart, e.g.
+// "14" — used for the chart's time-of-day axis labels.
+function formatHourLabel(isoString) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    hour: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(isoString));
+  const hourPart = parts.find((p) => p.type === "hour");
+  return hourPart ? hourPart.value : "";
+}
+
 // Renders a 24-bar chart (bar height proportional to that hour's cost vs.
 // the most expensive hour/weekly-average in the window) as an image for
 // addImage() — ListWidget has no native chart element. Each bar also gets a
 // short horizontal mark at the height of that hour-of-day's 7-day average
 // (when there's enough history for one), so today's real-time shape can be
 // compared at a glance against what that hour usually costs.
-function buildHourlyChartImage(buckets, width, height) {
+//
+// `hourLabelInterval`, if given, reserves a strip below the bars and labels
+// every Nth bar with its local clock hour (e.g. 3 -> every 3 hours), so the
+// chart reads as a time axis rather than just 24 unlabeled bars.
+function buildHourlyChartImage(buckets, width, height, hourLabelInterval) {
+  const labelHeight = hourLabelInterval ? 12 : 0;
+  const chartHeight = height - labelHeight;
+
   const dc = new DrawContext();
   dc.size = new Size(width, height);
   dc.opaque = false;
@@ -186,26 +205,35 @@ function buildHourlyChartImage(buckets, width, height) {
   const barWidth = (width - gap * (buckets.length - 1)) / buckets.length;
   const barColor = new Color("#4FC3F7");
   const avgMarkColor = new Color("#FFFFFF", 0.9);
-  const avgMarkHeight = Math.max(1, Math.round(height / 40));
+  const avgMarkHeight = Math.max(1, Math.round(chartHeight / 40));
+  const labelColor = new Color("#9aa0a8");
+  const labelFont = Font.systemFont(9);
 
   buckets.forEach((bucket, i) => {
     const x = i * (barWidth + gap);
 
-    const barHeight = Math.max(2, (bucket.costGbp / maxCost) * height);
+    const barHeight = Math.max(2, (bucket.costGbp / maxCost) * chartHeight);
     const barPath = new Path();
-    barPath.addRoundedRect(new Rect(x, height - barHeight, barWidth, barHeight), 1, 1);
+    barPath.addRoundedRect(new Rect(x, chartHeight - barHeight, barWidth, barHeight), 1, 1);
     dc.addPath(barPath);
     dc.setFillColor(barColor);
     dc.fillPath();
 
     if (bucket.weeklyAvgCostGbp > 0) {
-      const markCenterY = height - (bucket.weeklyAvgCostGbp / maxCost) * height;
-      const markY = Math.min(height - avgMarkHeight, Math.max(0, markCenterY - avgMarkHeight / 2));
+      const markCenterY = chartHeight - (bucket.weeklyAvgCostGbp / maxCost) * chartHeight;
+      const markY = Math.min(chartHeight - avgMarkHeight, Math.max(0, markCenterY - avgMarkHeight / 2));
       const markPath = new Path();
       markPath.addRect(new Rect(x, markY, barWidth, avgMarkHeight));
       dc.addPath(markPath);
       dc.setFillColor(avgMarkColor);
       dc.fillPath();
+    }
+
+    if (hourLabelInterval && i % hourLabelInterval === 0) {
+      dc.setFont(labelFont);
+      dc.setTextColor(labelColor);
+      dc.setTextAlignedCenter();
+      dc.drawText(formatHourLabel(bucket.hourStart), new Point(x + barWidth / 2, chartHeight + 1));
     }
   });
 
@@ -261,15 +289,23 @@ function buildStatusWidget(status, stale, dashboardUrl) {
     topRow.addSpacer();
 
     const miniChartWidth = 120;
-    const miniChartHeight = 46;
-    const miniChartImage = buildHourlyChartImage(hourlyBuckets, miniChartWidth, miniChartHeight);
+    const miniChartHourLabelInterval = 3;
+    const miniChartHeight = 46 + 12; // bars + a labeled-every-3-hours axis strip
+    const miniChartImage = buildHourlyChartImage(
+      hourlyBuckets,
+      miniChartWidth,
+      miniChartHeight,
+      miniChartHourLabelInterval,
+    );
     const miniChartStack = topRow.addImage(miniChartImage);
     miniChartStack.imageSize = new Size(miniChartWidth, miniChartHeight);
   } else {
     addCurrentUsageLines(widget);
   }
 
-  widget.addSpacer(8);
+  // Medium gets extra breathing room here — with the mini chart's new axis
+  // labels sitting right above, the stats row was reading as cramped.
+  widget.addSpacer(config.widgetFamily === "medium" ? 16 : 8);
 
   if (config.widgetFamily === "small") {
     const todayLabel = widget.addText("TODAY");

@@ -104,6 +104,10 @@ export function renderDashboardHtml(token: string): string {
       <p class="stat-value" id="todayCost">&mdash;</p>
     </div>
     <div>
+      <p class="stat-label">YESTERDAY</p>
+      <p class="stat-value" id="yesterdayCost">&mdash;</p>
+    </div>
+    <div>
       <p class="stat-label">THIS MONTH</p>
       <p class="stat-value" id="monthCost">&mdash;</p>
     </div>
@@ -127,6 +131,7 @@ export function renderDashboardHtml(token: string): string {
   var upcomingRowEl = document.getElementById("upcomingRow");
   var lastHourCostEl = document.getElementById("lastHourCost");
   var todayCostEl = document.getElementById("todayCost");
+  var yesterdayCostEl = document.getElementById("yesterdayCost");
   var monthCostEl = document.getElementById("monthCost");
   var staleBadgeEl = document.getElementById("staleBadge");
   var footerEl = document.getElementById("footer");
@@ -259,6 +264,7 @@ export function renderDashboardHtml(token: string): string {
 
     lastHourCostEl.textContent = formatPounds(status.lastHourCostGbp || 0);
     todayCostEl.textContent = formatPounds(status.todayTotalCostGbp);
+    yesterdayCostEl.textContent = formatPounds(status.yesterdayTotalCostGbp || 0);
     monthCostEl.textContent = formatPounds(status.thisMonthTotalCostGbp);
 
     drawChart(Array.isArray(status.hourlyBuckets) ? status.hourlyBuckets : []);

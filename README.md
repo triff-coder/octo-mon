@@ -140,6 +140,8 @@ You should get back JSON like:
   "currentCostPerHourGbp": 0.197,
   "todayTotalKwh": 14.2,
   "todayTotalCostGbp": 3.87,
+  "yesterdayTotalKwh": 15.9,
+  "yesterdayTotalCostGbp": 4.21,
   "thisMonthTotalKwh": 187.4,
   "thisMonthTotalCostGbp": 41.92,
   "billingPeriodStart": "2026-08-20",
@@ -160,7 +162,13 @@ You should get back JSON like:
 `thisMonthTotalKwh`/`thisMonthTotalCostGbp` track spend since `billingPeriodStart` —
 Octopus billing months run from the 20th of one calendar month to the 19th of
 the next, not the calendar month. `todayTotalKwh`/`todayTotalCostGbp` only ever
-cover today (built purely from live telemetry, no backfill). The month total is
+cover today (built purely from live telemetry, no backfill).
+`yesterdayTotalKwh`/`yesterdayTotalCostGbp` are derived by summing the
+previous calendar day's entries out of the same hour-bucket data backing the
+24-hour chart, rather than being a separately-tracked total — so, like the
+chart, it fills in gradually (nothing to show until the feature's been
+running a full day) and simply undercounts any hour with a telemetry gap
+rather than failing. The month total is
 different: on a cold start (first run, KV loss, or a new billing period), the
 Worker backfills every already-completed day since `billingPeriodStart` from
 Octopus's historical consumption REST endpoint before continuing forward with
@@ -199,9 +207,10 @@ https://octo-mon.<your-subdomain>.workers.dev/dashboard?token=<your WIDGET_SHARE
 ```
 
 A plain browser page showing the same information as the medium/large widget
-(current £/hr, any upcoming "NEXT AGILE" dispatch slots, last hour/today/this
-month, and the 24-hour chart with 7-day average marks and 3-hourly time
-labels) — bookmark it, or open it any time you want a reading that's more
+(current £/hr, any upcoming "NEXT AGILE" dispatch slots, last hour/today/
+yesterday/this month, and the 24-hour chart with 7-day average marks and
+3-hourly time labels) — bookmark it, or open it any time you want a reading
+that's more
 current than the widget. It's not subject to iOS's home-screen widget
 refresh throttling: every 30 seconds (and on every page load/reload) it calls
 `/status?refresh=true`, which skips the cached snapshot and fetches live from
@@ -249,8 +258,9 @@ npm test
 
 The widget shows current £/hr (colour-coded low/medium/high: green under
 20p, amber 20-30p, red 30p+) and today's running total on every size. Medium
-and large widgets add last hour's cost and this month's running total as extra
-columns, plus a 24-hour bar chart — medium fits a miniature version next to
+and large widgets add last hour's, yesterday's, and this month's running
+total as extra columns, plus a 24-hour bar chart — medium fits a miniature
+version next to
 the current-usage numbers, large gets a full-width one underneath the stats
 row. Each bar also carries a small mark at that hour-of-day's 7-day average,
 so you can see whether the current hour is running above or below what's

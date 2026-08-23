@@ -351,8 +351,9 @@ function buildStatusWidget(status, stale, dashboardUrl) {
   } else {
     // Side-by-side columns make far better use of a medium/large widget's
     // width than stacking stats vertically, which was overflowing the
-    // widget's height and getting clipped at the bottom. Three columns (down
-    // to label + value only, no subtext) keeps each one legible.
+    // widget's height and getting clipped at the bottom. Four columns (down
+    // to label + value only, no subtext, and a smaller font than the
+    // original three-column version needed) keeps each one legible.
     const statsRow = widget.addStack();
     statsRow.layoutHorizontally();
 
@@ -360,10 +361,10 @@ function buildStatusWidget(status, stale, dashboardUrl) {
       const column = statsRow.addStack();
       column.layoutVertically();
       const labelText = column.addText(label);
-      labelText.font = Font.mediumSystemFont(10);
+      labelText.font = Font.mediumSystemFont(9);
       labelText.textColor = Color.gray();
       const valueText_ = column.addText(valueText);
-      valueText_.font = Font.boldSystemFont(17);
+      valueText_.font = Font.boldSystemFont(15);
       valueText_.textColor = Color.white();
     };
 
@@ -371,7 +372,9 @@ function buildStatusWidget(status, stale, dashboardUrl) {
     statsRow.addSpacer();
     addStatColumn("TODAY", formatPounds(status.todayTotalCostGbp));
     statsRow.addSpacer();
-    addStatColumn("THIS MONTH", formatPounds(status.thisMonthTotalCostGbp));
+    addStatColumn("YESTERDAY", formatPounds(status.yesterdayTotalCostGbp ?? 0));
+    statsRow.addSpacer();
+    addStatColumn("MONTH", formatPounds(status.thisMonthTotalCostGbp));
 
     if (config.widgetFamily === "large" && hourlyBuckets.length > 0) {
       widget.addSpacer(10);

@@ -8,6 +8,7 @@ import {
 } from "./octopus";
 import type { DispatchWindow } from "./octopus";
 import {
+  addDaysToDateKey,
   billingPeriodKey,
   hourStartUtc,
   isSameBillingPeriod,
@@ -233,6 +234,27 @@ export function buildHourlyBuckets(
   }
 
   return result;
+}
+
+/**
+ * Sums the hour-bucket totals for a given Europe/London calendar date
+ * (e.g. "yesterday") — a derived total, not a separately-tracked
+ * accumulator, so it inherits the same gradual-fill-in and gap-undercounts
+ * behavior as the 24-hour chart rather than being backfilled from history.
+ */
+function sumHourBucketsForLondonDate(
+  state: HourBucketsState,
+  dateKey: string,
+): { kwhSoFar: number; costGbpSoFar: number } {
+  let kwhSoFar = 0;
+  let costGbpSoFar = 0;
+  for (const bucket of state.buckets) {
+    if (londonDateKey(new Date(bucket.hourStart)) === dateKey) {
+      kwhSoFar += bucket.kwhSoFar;
+      costGbpSoFar += bucket.costGbpSoFar;
+    }
+  }
+  return { kwhSoFar, costGbpSoFar };
 }
 
 /**
@@ -466,6 +488,7 @@ export async function computeStatus(
   const hourlyBuckets = buildHourlyBuckets(hourBuckets, now);
   const lastHourCostGbp = hourlyBuckets.at(-1)?.costGbp ?? 0;
   const nextAgileSlots = await resolveNextAgileSlots(env, jwt, todayRates, now);
+  const yesterdayTotal = sumHourBucketsForLondonDate(hourBuckets, addDaysToDateKey(todayKey, -1));
 
   const status: StatusResponse = {
     generatedAt: now.toISOString(),
@@ -474,6 +497,8 @@ export async function computeStatus(
     currentCostPerHourGbp,
     todayTotalKwh: accumulator.kwhSoFar,
     todayTotalCostGbp: accumulator.costGbpSoFar,
+    yesterdayTotalKwh: yesterdayTotal.kwhSoFar,
+    yesterdayTotalCostGbp: yesterdayTotal.costGbpSoFar,
     thisMonthTotalKwh: monthAccumulator.kwhSoFar,
     thisMonthTotalCostGbp: monthAccumulator.costGbpSoFar,
     billingPeriodStart: monthAccumulator.periodKey,

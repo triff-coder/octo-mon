@@ -539,6 +539,55 @@ describe("computeStatus", () => {
     vi.unstubAllGlobals();
   });
 
+  it("derives yesterdayTotal by summing the previous London calendar day's hour buckets", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:00:00Z", demand: 500, consumptionDelta: 1000 }],
+        pencePerKwh: 10,
+      }),
+    );
+
+    const previousHourBuckets: HourBucketsState = {
+      buckets: [
+        // Yesterday (2026-01-14) — should be summed into yesterdayTotal.
+        { hourStart: "2026-01-14T10:00:00.000Z", kwhSoFar: 1, costGbpSoFar: 0.2 },
+        { hourStart: "2026-01-14T14:00:00.000Z", kwhSoFar: 2, costGbpSoFar: 0.3 },
+        // The day before that — must not be included.
+        { hourStart: "2026-01-13T10:00:00.000Z", kwhSoFar: 99, costGbpSoFar: 99 },
+        // Today, still in progress — must not be included either.
+        { hourStart: "2026-01-15T09:00:00.000Z", kwhSoFar: 5, costGbpSoFar: 5 },
+      ],
+      lastReadingAt: "2026-01-15T09:30:00Z",
+    };
+
+    const now = new Date("2026-01-15T10:01:00Z");
+    const { status } = await computeStatus(testEnv, null, null, previousHourBuckets, now);
+
+    expect(status.yesterdayTotalKwh).toBeCloseTo(3); // 1 + 2
+    expect(status.yesterdayTotalCostGbp).toBeCloseTo(0.5); // 0.2 + 0.3
+
+    vi.unstubAllGlobals();
+  });
+
+  it("reports a zero yesterdayTotal when there's no hour-bucket history yet", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:00:00Z", demand: 500, consumptionDelta: 1000 }],
+        pencePerKwh: 10,
+      }),
+    );
+
+    const now = new Date("2026-01-15T10:01:00Z");
+    const { status } = await computeStatus(testEnv, null, null, null, now);
+
+    expect(status.yesterdayTotalKwh).toBe(0);
+    expect(status.yesterdayTotalCostGbp).toBe(0);
+
+    vi.unstubAllGlobals();
+  });
+
   it("caps a cold start's telemetry fetch window instead of requesting since local midnight", async () => {
     // Kraken's smartMeterTelemetry silently returns zero results for an
     // overly wide TEN_SECONDS-grouped window rather than erroring, so a
@@ -923,6 +972,8 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       currentCostPerHourGbp: 0.2,
       todayTotalKwh: 3,
       todayTotalCostGbp: 0.6,
+      yesterdayTotalKwh: 2,
+      yesterdayTotalCostGbp: 0.4,
       thisMonthTotalKwh: 45,
       thisMonthTotalCostGbp: 9,
       billingPeriodStart: "2025-12-20",
@@ -958,6 +1009,8 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       currentCostPerHourGbp: 0.2,
       todayTotalKwh: 3,
       todayTotalCostGbp: 0.6,
+      yesterdayTotalKwh: 2,
+      yesterdayTotalCostGbp: 0.4,
       thisMonthTotalKwh: 45,
       thisMonthTotalCostGbp: 9,
       billingPeriodStart: "2025-12-20",
@@ -1010,6 +1063,8 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       currentCostPerHourGbp: 0.2,
       todayTotalKwh: 3,
       todayTotalCostGbp: 0.6,
+      yesterdayTotalKwh: 2,
+      yesterdayTotalCostGbp: 0.4,
       thisMonthTotalKwh: 45,
       thisMonthTotalCostGbp: 9,
       billingPeriodStart: "2025-12-20",

@@ -37,6 +37,8 @@ const cachedStatus: StatusResponse = {
   currentCostPerHourGbp: 0.2,
   todayTotalKwh: 3,
   todayTotalCostGbp: 0.6,
+  yesterdayTotalKwh: 2,
+  yesterdayTotalCostGbp: 0.4,
   thisMonthTotalKwh: 45,
   thisMonthTotalCostGbp: 9,
   billingPeriodStart: "2025-12-20",

@@ -90,6 +90,15 @@ export interface StatusResponse {
   currentCostPerHourGbp: number;
   todayTotalKwh: number;
   todayTotalCostGbp: number;
+  /**
+   * Total spend for the previous Europe/London calendar day, derived by
+   * summing `hourlyBuckets`' underlying per-hour totals for that date
+   * (not a separately-tracked accumulator) — so, like the chart, it fills
+   * in gradually and undercounts any hour with a telemetry gap rather than
+   * failing outright.
+   */
+  yesterdayTotalKwh: number;
+  yesterdayTotalCostGbp: number;
   thisMonthTotalKwh: number;
   thisMonthTotalCostGbp: number;
   billingPeriodStart: string;

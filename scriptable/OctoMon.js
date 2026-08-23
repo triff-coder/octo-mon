@@ -159,13 +159,10 @@ function formatTime(isoString) {
   return new Date(isoString).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-// Low/medium/high cost bands. Tuned for a mixed fleet of tariffs rather
-// than Agile's fine-grained half-hourly swings alone — e.g. Intelligent
-// Octopus Go's ~7p off-peak rate reads as low, its ~28p day rate as high,
-// leaving a mid band free for anything in between.
+// Low/medium/high cost bands.
 function colorForRate(pencePerKwh) {
-  if (pencePerKwh < 10) return new Color("#4CAF50"); // low
-  if (pencePerKwh < 20) return new Color("#FFA726"); // medium
+  if (pencePerKwh < 20) return new Color("#4CAF50"); // low
+  if (pencePerKwh < 30) return new Color("#FFA726"); // medium
   return new Color("#EF5350"); // high
 }
 

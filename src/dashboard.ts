@@ -145,8 +145,8 @@ export function renderDashboardHtml(token: string): string {
   // Low/medium/high cost bands -- mirrors scriptable/OctoMon.js's
   // colorForRate exactly (see CLAUDE.md).
   function colorForRate(pencePerKwh) {
-    if (pencePerKwh < 10) return "#4CAF50"; // low
-    if (pencePerKwh < 20) return "#FFA726"; // medium
+    if (pencePerKwh < 20) return "#4CAF50"; // low
+    if (pencePerKwh < 30) return "#FFA726"; // medium
     return "#EF5350"; // high
   }
 

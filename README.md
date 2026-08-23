@@ -248,9 +248,8 @@ npm test
    sticks to just current £/hr and today's total — there's no room for more.
 
 The widget shows current £/hr (colour-coded low/medium/high: green under
-10p, amber 10-20p, red 20p+) and today's running total on every size. Medium
-and
-large widgets add last hour's cost and this month's running total as extra
+20p, amber 20-30p, red 30p+) and today's running total on every size. Medium
+and large widgets add last hour's cost and this month's running total as extra
 columns, plus a 24-hour bar chart — medium fits a miniature version next to
 the current-usage numbers, large gets a full-width one underneath the stats
 row. Each bar also carries a small mark at that hour-of-day's 7-day average,

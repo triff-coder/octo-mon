@@ -181,6 +181,15 @@ function formatHourLabel(isoString) {
   return hourPart ? hourPart.value : "";
 }
 
+// Whether a bucket's hour overlaps the typical overnight off-peak window
+// (23:30-05:30 local) — used to shade those bars lighter on the chart.
+// Bars are whole clock hours, so the 23:00 and 05:00 bars (each only half
+// in the window) are included too rather than left an odd one out.
+function isOvernightHour(hourStartIso) {
+  const localHour = Number(formatHourLabel(hourStartIso));
+  return localHour >= 23 || localHour < 6;
+}
+
 // Renders a 24-bar chart (bar height proportional to that hour's cost vs.
 // the most expensive hour/weekly-average in the window) as an image for
 // addImage() — ListWidget has no native chart element. Each bar also gets a
@@ -208,6 +217,7 @@ function buildHourlyChartImage(buckets, width, height, hourLabelInterval) {
   const gap = Math.max(1, width / buckets.length / 8);
   const barWidth = (width - gap * (buckets.length - 1)) / buckets.length;
   const barColor = new Color("#4FC3F7");
+  const overnightBarColor = new Color("#8FD8FA"); // lighter tint for the 23:30-05:30 off-peak window
   const avgMarkColor = new Color("#FFFFFF", 0.9);
   const avgMarkHeight = Math.max(1, Math.round(chartHeight / 40));
   const labelColor = new Color("#9aa0a8");
@@ -220,7 +230,7 @@ function buildHourlyChartImage(buckets, width, height, hourLabelInterval) {
     const barPath = new Path();
     barPath.addRoundedRect(new Rect(x, chartHeight - barHeight, barWidth, barHeight), 1, 1);
     dc.addPath(barPath);
-    dc.setFillColor(barColor);
+    dc.setFillColor(isOvernightHour(bucket.hourStart) ? overnightBarColor : barColor);
     dc.fillPath();
 
     if (bucket.weeklyAvgCostGbp > 0) {

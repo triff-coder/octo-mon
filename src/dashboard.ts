@@ -168,6 +168,15 @@ export function renderDashboardHtml(token: string): string {
     return "";
   }
 
+  // Whether a bucket's hour overlaps the typical overnight off-peak window
+  // (23:30-05:30 local) -- used to shade those bars lighter on the chart.
+  // Bars are whole clock hours, so the 23:00 and 05:00 bars (each only
+  // half in the window) are included too rather than left an odd one out.
+  function isOvernightHour(isoString) {
+    var localHour = Number(formatHourLabel(isoString));
+    return localHour >= 23 || localHour < 6;
+  }
+
   var HOUR_LABEL_INTERVAL = 3;
   var UPCOMING_SLOT_COUNT = 6;
 
@@ -223,7 +232,7 @@ export function renderDashboardHtml(token: string): string {
       var bucket = buckets[j];
       var x = j * (barWidth + gap);
       var barHeight = Math.max(3, (bucket.costGbp / maxCost) * chartHeight);
-      ctx.fillStyle = "#4FC3F7";
+      ctx.fillStyle = isOvernightHour(bucket.hourStart) ? "#8FD8FA" : "#4FC3F7";
       ctx.fillRect(x, chartHeight - barHeight, barWidth, barHeight);
 
       if (bucket.weeklyAvgCostGbp > 0) {

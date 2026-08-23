@@ -30,8 +30,9 @@ cleanly; use judgement about which one the dashboard should mirror.
 
 Concretely: the medium mini chart in `buildHourlyChartImage` (JS,
 `scriptable/OctoMon.js`) and `drawChart` (JS, `src/dashboard.ts`) should be
-kept in step — same bar/mark logic, same hour-label interval — resized for
-each surface's own dimensions rather than copy-pasted verbatim. Likewise
-`colorForRate` (the low/medium/high £/hr colour bands) is duplicated in both
-files and must stay numerically identical — change the thresholds in one,
-change them in the other.
+kept in step — same bar/mark logic, same hour-label interval, same
+overnight-hour bar shading (`isOvernightHour`) — resized for each surface's
+own dimensions rather than copy-pasted verbatim. Likewise `colorForRate`
+(the low/medium/high £/hr colour bands) is duplicated in both files and
+must stay numerically identical — change the thresholds in one, change them
+in the other.

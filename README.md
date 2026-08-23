@@ -256,7 +256,10 @@ the current-usage numbers, large gets a full-width one underneath the stats
 row. Each bar also carries a small mark at that hour-of-day's 7-day average,
 so you can see whether the current hour is running above or below what's
 typical, and every 3rd bar is labelled with its local clock hour so the
-chart reads as a time axis rather than 24 unlabeled bars. When Octopus has
+chart reads as a time axis rather than 24 unlabeled bars. Bars for the
+overnight off-peak window (23:30-05:30 local) are shaded a lighter blue —
+since bars are whole clock hours, the 23:00 and 05:00 bars (each only half
+in the window) are included too rather than left an odd one out. When Octopus has
 granted any upcoming "smart charging" dispatch slots (occasional off-peak
 bonus windows, e.g. Intelligent Octopus Go's "bump charge" boosts), the
 medium widget lists them as "NEXT AGILE" between the current-usage numbers

@@ -20,12 +20,14 @@ import {
   secondsBetween,
 } from "./time";
 import type {
-  UnitRate,
+  DailyHistoryEntry,
+  DailyHistoryResponse,
   Env,
   HourBucketsState,
   MonthAccumulator,
   StatusResponse,
   TodayAccumulator,
+  UnitRate,
 } from "./types";
 
 const STATUS_SNAPSHOT_KV_KEY = "status:latest";
@@ -49,6 +51,13 @@ const UPCOMING_RATE_COUNT = 6;
 // under the point where Kraken's smartMeterTelemetry silently starts
 // returning nothing (see the fetchSince comment in computeStatus).
 const MAX_TELEMETRY_FETCH_HOURS = 6;
+const DAILY_HISTORY_KV_KEY = "history:daily";
+// This settles slowly (consumption REST data lags) and never changes for
+// days that are already fully in the past, so there's no benefit to
+// refreshing it anywhere near as often as /status — cache-or-recompute on
+// a long TTL, same pattern as fetchUnitRatesForDay's per-day rate cache.
+const DAILY_HISTORY_TTL_SECONDS = 12 * 60 * 60;
+const DAILY_HISTORY_DAYS = 30;
 
 /** Finds the unit rate whose validity window contains `instant`. */
 export function findRateForInstant(rates: UnitRate[], instant: Date): UnitRate | null {
@@ -587,4 +596,78 @@ export async function getOrComputeStatus(
   }
 
   return refreshStatus(env, now);
+}
+
+/**
+ * Computes per-day totals for the last DAILY_HISTORY_DAYS complete
+ * Europe/London calendar days (never including today, which is always
+ * still in progress), via a single REST consumption fetch spanning the
+ * whole window, priced per-day against each day's published unit rates
+ * (cached individually via fetchUnitRatesForDay, so repeat calls across
+ * overlapping windows stay cheap). A day with no consumption data at all
+ * (e.g. before the Home Mini was installed) simply reports zero.
+ */
+export async function computeDailyHistory(
+  env: Env,
+  now: Date = new Date(),
+): Promise<DailyHistoryEntry[]> {
+  const todayKey = londonDateKey(now);
+  const endExclusive = londonMidnightUtc(todayKey);
+  const start = londonMidnightUtc(addDaysToDateKey(todayKey, -DAILY_HISTORY_DAYS));
+
+  const intervals = await fetchHistoricalConsumption(env, start, endExclusive);
+
+  const ratesCache = new Map<string, UnitRate[]>();
+  const totalsByDay = new Map<string, { kwh: number; costGbp: number }>();
+
+  for (const interval of intervals) {
+    const intervalStart = new Date(interval.intervalStart);
+    const dayKey = londonDateKey(intervalStart);
+
+    let rates = ratesCache.get(dayKey);
+    if (!rates) {
+      rates = await fetchUnitRatesForDay(env, dayKey);
+      ratesCache.set(dayKey, rates);
+    }
+
+    const rate = findRateForInstant(rates, intervalStart);
+    if (!rate) continue;
+
+    const totals = totalsByDay.get(dayKey) ?? { kwh: 0, costGbp: 0 };
+    totals.kwh += interval.consumptionKwh;
+    totals.costGbp += (interval.consumptionKwh * rate.pencePerKwh) / 100;
+    totalsByDay.set(dayKey, totals);
+  }
+
+  const days: DailyHistoryEntry[] = [];
+  for (let i = DAILY_HISTORY_DAYS; i >= 1; i--) {
+    const dateKey = addDaysToDateKey(todayKey, -i);
+    const totals = totalsByDay.get(dateKey);
+    days.push({ dateKey, kwh: totals?.kwh ?? 0, costGbp: totals?.costGbp ?? 0 });
+  }
+
+  return days;
+}
+
+/**
+ * Reads the cached daily-history snapshot for GET /history, computing and
+ * caching a fresh one if it's missing or has expired. Dashboard-only —
+ * the widget has no equivalent, there's no room for a 30-day list on a
+ * home-screen widget.
+ */
+export async function getOrComputeDailyHistory(
+  env: Env,
+  now: Date = new Date(),
+): Promise<DailyHistoryResponse> {
+  const cached = await getJson<DailyHistoryResponse>(env.OCTOMON_KV, DAILY_HISTORY_KV_KEY);
+  if (cached) return cached;
+
+  const response: DailyHistoryResponse = {
+    days: await computeDailyHistory(env, now),
+    generatedAt: now.toISOString(),
+  };
+  await putJson(env.OCTOMON_KV, DAILY_HISTORY_KV_KEY, response, {
+    expirationTtl: DAILY_HISTORY_TTL_SECONDS,
+  });
+  return response;
 }

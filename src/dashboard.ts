@@ -70,6 +70,29 @@ export function renderDashboardHtml(token: string): string {
   .stat-kwh { font-size: 11px; color: #9aa0a8; margin: 2px 0 0; }
   #chartLabel { font-size: 11px; color: #9aa0a8; margin-bottom: 8px; }
   canvas { width: 100%; height: 160px; display: block; }
+  #historyLabel { font-size: 11px; color: #9aa0a8; margin: 24px 0 8px; }
+  .history-empty { font-size: 12px; color: #9aa0a8; }
+  .history-boundary {
+    display: flex; align-items: center; gap: 8px;
+    margin: 10px 0 6px; color: #9aa0a8; font-size: 9px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .history-boundary::before, .history-boundary::after {
+    content: ""; flex: 1; height: 1px; background: #3a3f47;
+  }
+  .history-row {
+    position: relative;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 8px; border-radius: 6px; overflow: hidden; margin-bottom: 2px;
+  }
+  .history-bar {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    background: rgba(79, 195, 247, 0.18); z-index: 0;
+  }
+  .history-date { font-size: 12px; color: #cfd3d8; z-index: 1; }
+  .history-values { font-size: 12px; z-index: 1; white-space: nowrap; }
+  .history-values .cost { font-weight: 700; color: #fff; }
+  .history-values .kwh { color: #9aa0a8; margin-left: 8px; }
   #footer { font-size: 11px; color: #9aa0a8; margin-top: 16px; }
   #errorBanner {
     display: none; background: #3a1d1d; border: 1px solid #EF5350;
@@ -121,6 +144,9 @@ export function renderDashboardHtml(token: string): string {
   <p id="chartLabel">LAST 24 HOURS &middot; mark = 7-day avg</p>
   <canvas id="chart" width="960" height="320"></canvas>
 
+  <p id="historyLabel">LAST 30 DAYS</p>
+  <div class="history-list" id="historyList"></div>
+
   <p id="footer">Loading&hellip;</p>
 </main>
 
@@ -143,6 +169,7 @@ export function renderDashboardHtml(token: string): string {
   var monthCostEl = document.getElementById("monthCost");
   var monthKwhEl = document.getElementById("monthKwh");
   var staleBadgeEl = document.getElementById("staleBadge");
+  var historyListEl = document.getElementById("historyList");
   var footerEl = document.getElementById("footer");
   var errorBannerEl = document.getElementById("errorBanner");
   var canvas = document.getElementById("chart");
@@ -170,6 +197,16 @@ export function renderDashboardHtml(token: string): string {
 
   function formatTime(isoString) {
     return new Date(isoString).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  // dateKey is a plain YYYY-MM-DD Europe/London calendar date -- parsed as
+  // UTC noon so no local timezone offset can shift it onto the wrong day.
+  function formatShortDate(dateKey) {
+    return new Date(dateKey + "T12:00:00Z").toLocaleDateString([], {
+      day: "numeric",
+      month: "short",
+      timeZone: "UTC",
+    });
   }
 
   // The local (Europe/London) clock hour for a bucket's UTC hourStart, e.g.
@@ -267,6 +304,83 @@ export function renderDashboardHtml(token: string): string {
     }
   }
 
+  // Octopus's billing cycle rolls over on the 20th of each month -- draw a
+  // divider before the first entry that starts a new cycle.
+  function isBillingCycleEnd(dateKey) {
+    return dateKey.slice(8, 10) === "20";
+  }
+
+  function renderHistory(days) {
+    historyListEl.innerHTML = "";
+    if (!days || days.length === 0) {
+      historyListEl.textContent = "No history yet.";
+      historyListEl.classList.add("history-empty");
+      return;
+    }
+    historyListEl.classList.remove("history-empty");
+
+    var maxCost = 0.01;
+    for (var i = 0; i < days.length; i++) {
+      maxCost = Math.max(maxCost, days[i].costGbp || 0);
+    }
+
+    days.forEach(function (day) {
+      if (isBillingCycleEnd(day.dateKey)) {
+        var boundary = document.createElement("div");
+        boundary.className = "history-boundary";
+        boundary.textContent = "Billing cycle ends";
+        historyListEl.appendChild(boundary);
+      }
+
+      var row = document.createElement("div");
+      row.className = "history-row";
+
+      var bar = document.createElement("div");
+      bar.className = "history-bar";
+      bar.style.width = Math.max(2, (day.costGbp / maxCost) * 100) + "%";
+
+      var date = document.createElement("span");
+      date.className = "history-date";
+      date.textContent = formatShortDate(day.dateKey);
+
+      var values = document.createElement("span");
+      values.className = "history-values";
+
+      var cost = document.createElement("span");
+      cost.className = "cost";
+      cost.textContent = formatPounds(day.costGbp);
+
+      var kwh = document.createElement("span");
+      kwh.className = "kwh";
+      kwh.textContent = formatKwh(day.kwh);
+
+      values.appendChild(cost);
+      values.appendChild(kwh);
+
+      row.appendChild(bar);
+      row.appendChild(date);
+      row.appendChild(values);
+      historyListEl.appendChild(row);
+    });
+  }
+
+  function loadHistory() {
+    fetch("/history?token=" + encodeURIComponent(TOKEN))
+      .then(function (response) {
+        if (!response.ok) throw new Error("Worker returned HTTP " + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        renderHistory(data.days);
+      })
+      .catch(function () {
+        // Secondary/best-effort section -- fail quietly rather than
+        // triggering the primary error banner used for /status.
+        historyListEl.textContent = "Couldn't load history.";
+        historyListEl.classList.add("history-empty");
+      });
+  }
+
   function render(status, stale) {
     currentCostEl.textContent = formatPounds(status.currentCostPerHourGbp) + "/hr";
     currentCostEl.style.color = colorForRate(status.currentRate.pencePerKwh);
@@ -319,6 +433,7 @@ export function renderDashboardHtml(token: string): string {
 
   poll();
   setInterval(poll, POLL_INTERVAL_MS);
+  loadHistory();
 })();
 </script>
 </body>

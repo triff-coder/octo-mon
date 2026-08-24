@@ -130,3 +130,18 @@ export interface StatusResponse {
   stale: boolean;
   snapshotAgeSeconds: number;
 }
+
+/** A single day's total in DailyHistoryResponse. */
+export interface DailyHistoryEntry {
+  /** Europe/London calendar date (YYYY-MM-DD). */
+  dateKey: string;
+  kwh: number;
+  costGbp: number;
+}
+
+/** The JSON payload served from GET /history — dashboard-only, not used by the widget. */
+export interface DailyHistoryResponse {
+  /** The last N complete Europe/London calendar days, oldest first (today is never included — always in progress). */
+  days: DailyHistoryEntry[];
+  generatedAt: string;
+}

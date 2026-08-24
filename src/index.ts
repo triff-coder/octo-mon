@@ -1,6 +1,7 @@
 import { isAuthorized } from "./auth";
 import {
   computeStatus,
+  getOrComputeDailyHistory,
   getOrComputeStatus,
   loadHourBuckets,
   loadMonthAccumulator,
@@ -31,6 +32,20 @@ export default {
         return jsonResponse(status, 200);
       } catch (error) {
         console.error("octo-mon /status failed:", error);
+        const message = error instanceof Error ? error.message : String(error);
+        return jsonResponse({ error: "internal_error", message }, 500);
+      }
+    }
+
+    if (request.method === "GET" && url.pathname === "/history") {
+      if (!isAuthorized(request, env)) {
+        return jsonResponse({ error: "unauthorized" }, 401);
+      }
+      try {
+        const history = await getOrComputeDailyHistory(env);
+        return jsonResponse(history, 200);
+      } catch (error) {
+        console.error("octo-mon /history failed:", error);
         const message = error instanceof Error ? error.message : String(error);
         return jsonResponse({ error: "internal_error", message }, 500);
       }

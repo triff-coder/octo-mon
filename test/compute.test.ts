@@ -5,8 +5,10 @@ import {
   advanceMonthAccumulator,
   advanceTodayAccumulator,
   buildHourlyBuckets,
+  computeDailyHistory,
   computeStatus,
   findRateForInstant,
+  getOrComputeDailyHistory,
   getOrComputeStatus,
   loadHourBuckets,
   loadMonthAccumulator,
@@ -1094,5 +1096,57 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
     // Reflects the live telemetry, not the cached snapshot's stale values.
     expect(result.currentDemandKw).toBe(2.5);
     expect(fetchMock).toHaveBeenCalled();
+  });
+});
+
+describe("computeDailyHistory", () => {
+  it("sums consumption per day priced at that day's rate, 30 entries oldest first, excluding today", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        pencePerKwh: 20,
+        consumption: [
+          { consumptionKwh: 2, intervalStart: "2026-01-15T10:00:00Z", intervalEnd: "2026-01-15T10:30:00Z" },
+          { consumptionKwh: 3, intervalStart: "2026-01-15T10:30:00Z", intervalEnd: "2026-01-15T11:00:00Z" },
+          { consumptionKwh: 1, intervalStart: "2026-01-30T23:00:00Z", intervalEnd: "2026-01-30T23:30:00Z" }, // yesterday
+          { consumptionKwh: 99, intervalStart: "2026-01-31T09:00:00Z", intervalEnd: "2026-01-31T09:30:00Z" }, // today, must not appear
+        ],
+      }),
+    );
+
+    const now = new Date("2026-01-31T10:00:00Z");
+    const days = await computeDailyHistory(testEnv, now);
+
+    expect(days).toHaveLength(30);
+    expect(days[0]?.dateKey).toBe("2026-01-01");
+    expect(days.at(-1)?.dateKey).toBe("2026-01-30");
+    expect(days.some((d) => d.dateKey === "2026-01-31")).toBe(false);
+
+    const jan15 = days.find((d) => d.dateKey === "2026-01-15");
+    expect(jan15?.kwh).toBeCloseTo(5); // 2 + 3
+    expect(jan15?.costGbp).toBeCloseTo((5 * 20) / 100);
+
+    expect(days.at(-1)?.kwh).toBeCloseTo(1); // yesterday
+
+    // A day with no consumption data reports zero rather than being omitted.
+    expect(days[0]).toEqual({ dateKey: "2026-01-01", kwh: 0, costGbp: 0 });
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("getOrComputeDailyHistory", () => {
+  it("caches the computed result so a second call doesn't refetch", async () => {
+    const fetchMock = mockOctopusApi({ pencePerKwh: 20, consumption: [] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const now = new Date("2026-01-31T10:00:00Z");
+    await getOrComputeDailyHistory(testEnv, now);
+    await getOrComputeDailyHistory(testEnv, now);
+
+    const consumptionCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes("/consumption/"));
+    expect(consumptionCalls).toHaveLength(1);
+
+    vi.unstubAllGlobals();
   });
 });

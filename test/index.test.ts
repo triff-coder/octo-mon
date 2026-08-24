@@ -160,6 +160,51 @@ describe("GET /status", () => {
   });
 });
 
+describe("GET /history", () => {
+  it("rejects a request with no token", async () => {
+    const response = await callFetch(new Request("https://example.com/history"));
+    expect(response.status).toBe(401);
+  });
+
+  it("returns 30 days of history, oldest first", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = input.toString();
+      const jsonResponse = (body: unknown) =>
+        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+
+      if (url.includes("/standard-unit-rates/")) {
+        return jsonResponse({
+          count: 1,
+          next: null,
+          previous: null,
+          results: [
+            {
+              value_exc_vat: 9.52,
+              value_inc_vat: 10,
+              valid_from: "2000-01-01T00:00:00Z",
+              valid_to: "2100-01-01T00:00:00Z",
+              payment_method: "DIRECT_DEBIT",
+            },
+          ],
+        });
+      }
+      if (url.includes("/consumption/")) {
+        return jsonResponse({ count: 0, next: null, previous: null, results: [] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await callFetch(
+      new Request("https://example.com/history", { headers: { "X-Widget-Secret": "test-secret" } }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { days: { dateKey: string }[] };
+    expect(body.days).toHaveLength(30);
+  });
+});
+
 describe("GET /dashboard", () => {
   it("rejects a request with no token", async () => {
     const response = await callFetch(new Request("https://example.com/dashboard"));

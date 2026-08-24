@@ -201,6 +201,32 @@ dispatch lookup degrades to an empty list rather than failing the request.
 If it's the very first request, the Worker computes live (a bit slower); after
 that, the 5-minute cron keeps a warm snapshot so requests are fast.
 
+### GET /history
+
+```
+https://octo-mon.<your-subdomain>.workers.dev/history?token=<your WIDGET_SHARED_SECRET>
+```
+
+Dashboard-only (the widget doesn't call this). Returns the last 30 complete
+Europe/London calendar days of usage, oldest first — today is never included,
+since it's still in progress:
+
+```json
+{
+  "days": [
+    { "dateKey": "2026-07-25", "kwh": 12.4, "costGbp": 2.87 },
+    { "dateKey": "2026-07-26", "kwh": 15.1, "costGbp": 3.52 }
+  ],
+  "generatedAt": "2026-08-24T09:00:00.000Z"
+}
+```
+
+Each day's total is priced against that day's own unit rates (so a variable
+tariff's rate changes are reflected correctly), summed from the historical
+consumption REST endpoint. A day the meter has no data for contributes zero.
+The response is cached in KV for 12 hours, since fully-past days never
+change and this doesn't need near-real-time freshness.
+
 ### Web dashboard
 
 ```
@@ -210,9 +236,13 @@ https://octo-mon.<your-subdomain>.workers.dev/dashboard?token=<your WIDGET_SHARE
 A plain browser page showing the same information as the medium/large widget
 (current £/hr, any upcoming "NEXT AGILE" dispatch slots, last hour/today/
 yesterday/this month, and the 24-hour chart with 7-day average marks and
-3-hourly time labels) — bookmark it, or open it any time you want a reading
-that's more
-current than the widget. It's not subject to iOS's home-screen widget
+3-hourly time labels), plus a dashboard-only "LAST 30 DAYS" list below the
+chart — each day's £ and kWh with a bar sized to that day's cost relative to
+the rest of the list, and a "Billing cycle ends" divider before the 20th of
+each month. It's fetched once per page load from `GET /history` (not on the
+30-second poll loop, since 30 days of history doesn't need near-real-time
+freshness) — bookmark the page, or open it any time you want a reading
+that's more current than the widget. It's not subject to iOS's home-screen widget
 refresh throttling: every 30 seconds (and on every page load/reload) it calls
 `/status?refresh=true`, which skips the cached snapshot and fetches live from
 Octopus — so what you see is never older than your Home Mini's own last

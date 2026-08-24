@@ -207,9 +207,9 @@ that, the 5-minute cron keeps a warm snapshot so requests are fast.
 https://octo-mon.<your-subdomain>.workers.dev/history?token=<your WIDGET_SHARED_SECRET>
 ```
 
-Dashboard-only (the widget doesn't call this). Returns the last 30 complete
-Europe/London calendar days of usage, oldest first — today is never included,
-since it's still in progress:
+Dashboard-only (the widget doesn't call this). Returns up to the last 30
+complete Europe/London calendar days of usage, oldest first — today is never
+included, since it's still in progress:
 
 ```json
 {
@@ -223,9 +223,13 @@ since it's still in progress:
 
 Each day's total is priced against that day's own unit rates (so a variable
 tariff's rate changes are reflected correctly), summed from the historical
-consumption REST endpoint. A day the meter has no data for contributes zero.
-The response is cached in KV for 12 hours, since fully-past days never
-change and this doesn't need near-real-time freshness.
+consumption REST endpoint. A day the meter has no data for at all (e.g.
+before the Home Mini was installed, or a newer account that hasn't reached
+30 days of history yet) is omitted entirely rather than padded with a zero
+entry — so `days` can be shorter than 30 and simply grows day by day, rather
+than staying empty-looking until a full 30 days have passed. The response is
+cached in KV for 12 hours, since fully-past days never change and this
+doesn't need near-real-time freshness.
 
 ### Web dashboard
 

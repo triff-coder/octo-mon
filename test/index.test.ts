@@ -166,7 +166,13 @@ describe("GET /history", () => {
     expect(response.status).toBe(401);
   });
 
-  it("returns 30 days of history, oldest first", async () => {
+  it("returns only the days that have consumption data, oldest first", async () => {
+    // Derived from the real system clock (rather than hardcoded), since the
+    // /history route calls getOrComputeDailyHistory without a fixed `now`.
+    const yesterday = new Date();
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    const yesterdayKey = yesterday.toISOString().slice(0, 10);
+
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const url = input.toString();
       const jsonResponse = (body: unknown) =>
@@ -189,7 +195,14 @@ describe("GET /history", () => {
         });
       }
       if (url.includes("/consumption/")) {
-        return jsonResponse({ count: 0, next: null, previous: null, results: [] });
+        return jsonResponse({
+          count: 1,
+          next: null,
+          previous: null,
+          results: [
+            { consumption: 1, interval_start: `${yesterdayKey}T10:00:00Z`, interval_end: `${yesterdayKey}T10:30:00Z` },
+          ],
+        });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -201,7 +214,8 @@ describe("GET /history", () => {
 
     expect(response.status).toBe(200);
     const body = (await response.json()) as { days: { dateKey: string }[] };
-    expect(body.days).toHaveLength(30);
+    expect(body.days).toHaveLength(1);
+    expect(body.days[0]?.dateKey).toBe(yesterdayKey);
   });
 });
 

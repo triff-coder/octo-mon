@@ -599,13 +599,16 @@ export async function getOrComputeStatus(
 }
 
 /**
- * Computes per-day totals for the last DAILY_HISTORY_DAYS complete
+ * Computes per-day totals for up to the last DAILY_HISTORY_DAYS complete
  * Europe/London calendar days (never including today, which is always
  * still in progress), via a single REST consumption fetch spanning the
  * whole window, priced per-day against each day's published unit rates
  * (cached individually via fetchUnitRatesForDay, so repeat calls across
  * overlapping windows stay cheap). A day with no consumption data at all
- * (e.g. before the Home Mini was installed) simply reports zero.
+ * (e.g. before the Home Mini was installed, or the account is younger
+ * than DAILY_HISTORY_DAYS) is omitted entirely rather than padded with a
+ * zero entry, so the list shows whatever history actually exists instead
+ * of waiting for the full window to fill up.
  */
 export async function computeDailyHistory(
   env: Env,
@@ -619,10 +622,12 @@ export async function computeDailyHistory(
 
   const ratesCache = new Map<string, UnitRate[]>();
   const totalsByDay = new Map<string, { kwh: number; costGbp: number }>();
+  const daysWithData = new Set<string>();
 
   for (const interval of intervals) {
     const intervalStart = new Date(interval.intervalStart);
     const dayKey = londonDateKey(intervalStart);
+    daysWithData.add(dayKey);
 
     let rates = ratesCache.get(dayKey);
     if (!rates) {
@@ -642,8 +647,9 @@ export async function computeDailyHistory(
   const days: DailyHistoryEntry[] = [];
   for (let i = DAILY_HISTORY_DAYS; i >= 1; i--) {
     const dateKey = addDaysToDateKey(todayKey, -i);
-    const totals = totalsByDay.get(dateKey);
-    days.push({ dateKey, kwh: totals?.kwh ?? 0, costGbp: totals?.costGbp ?? 0 });
+    if (!daysWithData.has(dateKey)) continue;
+    const totals = totalsByDay.get(dateKey) ?? { kwh: 0, costGbp: 0 };
+    days.push({ dateKey, kwh: totals.kwh, costGbp: totals.costGbp });
   }
 
   return days;

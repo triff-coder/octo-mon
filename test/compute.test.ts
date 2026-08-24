@@ -1100,7 +1100,7 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
 });
 
 describe("computeDailyHistory", () => {
-  it("sums consumption per day priced at that day's rate, 30 entries oldest first, excluding today", async () => {
+  it("sums consumption per day priced at that day's rate, oldest first, excluding today, omitting days with no data", async () => {
     vi.stubGlobal(
       "fetch",
       mockOctopusApi({
@@ -1117,8 +1117,10 @@ describe("computeDailyHistory", () => {
     const now = new Date("2026-01-31T10:00:00Z");
     const days = await computeDailyHistory(testEnv, now);
 
-    expect(days).toHaveLength(30);
-    expect(days[0]?.dateKey).toBe("2026-01-01");
+    // Only the two days that actually had consumption data appear -- no
+    // zero-padded stub entries for the other 28 days in the window.
+    expect(days).toHaveLength(2);
+    expect(days[0]?.dateKey).toBe("2026-01-15");
     expect(days.at(-1)?.dateKey).toBe("2026-01-30");
     expect(days.some((d) => d.dateKey === "2026-01-31")).toBe(false);
 
@@ -1128,8 +1130,16 @@ describe("computeDailyHistory", () => {
 
     expect(days.at(-1)?.kwh).toBeCloseTo(1); // yesterday
 
-    // A day with no consumption data reports zero rather than being omitted.
-    expect(days[0]).toEqual({ dateKey: "2026-01-01", kwh: 0, costGbp: 0 });
+    vi.unstubAllGlobals();
+  });
+
+  it("returns an empty list when there's no consumption data at all yet", async () => {
+    vi.stubGlobal("fetch", mockOctopusApi({ pencePerKwh: 20, consumption: [] }));
+
+    const now = new Date("2026-01-31T10:00:00Z");
+    const days = await computeDailyHistory(testEnv, now);
+
+    expect(days).toEqual([]);
 
     vi.unstubAllGlobals();
   });

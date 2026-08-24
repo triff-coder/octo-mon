@@ -141,7 +141,12 @@ export interface DailyHistoryEntry {
 
 /** The JSON payload served from GET /history — dashboard-only, not used by the widget. */
 export interface DailyHistoryResponse {
-  /** The last N complete Europe/London calendar days, oldest first (today is never included — always in progress). */
+  /**
+   * Up to the last 30 complete Europe/London calendar days, oldest first
+   * (today is never included — always in progress). Only days with actual
+   * consumption data are included, so this can be shorter than 30 entries
+   * (e.g. a newly set up account) rather than padded with zero-value days.
+   */
   days: DailyHistoryEntry[];
   generatedAt: string;
 }

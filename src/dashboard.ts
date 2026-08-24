@@ -304,10 +304,12 @@ export function renderDashboardHtml(token: string): string {
     }
   }
 
-  // Octopus's billing cycle rolls over on the 20th of each month -- draw a
-  // divider before the first entry that starts a new cycle.
+  // Octopus's billing cycle rolls over on the 20th of each month, so the
+  // 19th is always the last day of a cycle -- draw a divider right before
+  // it (the list renders newest first, so walking down through the 20th
+  // and on to the 19th is exactly where a cycle boundary is crossed).
   function isBillingCycleEnd(dateKey) {
-    return dateKey.slice(8, 10) === "20";
+    return dateKey.slice(8, 10) === "19";
   }
 
   function renderHistory(days) {
@@ -324,7 +326,10 @@ export function renderDashboardHtml(token: string): string {
       maxCost = Math.max(maxCost, days[i].costGbp || 0);
     }
 
-    days.forEach(function (day) {
+    // The API returns oldest first; show most recent at the top.
+    var newestFirst = days.slice().reverse();
+
+    newestFirst.forEach(function (day) {
       if (isBillingCycleEnd(day.dateKey)) {
         var boundary = document.createElement("div");
         boundary.className = "history-boundary";

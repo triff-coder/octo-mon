@@ -261,9 +261,11 @@ A plain browser page showing the same information as the medium/large widget
 (current £/hr, any upcoming "NEXT AGILE" dispatch slots, last hour/today/
 yesterday/this month, and the 24-hour chart with 7-day average marks and
 3-hourly time labels), plus a dashboard-only "LAST 30 DAYS" list below the
-chart — each day's £ and kWh with a bar sized to that day's cost relative to
-the rest of the list, and a "Billing cycle ends" divider before the 20th of
-each month. It's fetched once per page load from `GET /history` (not on the
+chart — most recent day first, each with its £ and kWh and a bar sized to
+that day's cost relative to the rest of the list, and a "Billing cycle ends"
+divider between the 20th and 19th of each month (the API itself returns the
+days oldest first; the page reverses them for display). It's fetched once
+per page load from `GET /history` (not on the
 30-second poll loop, since 30 days of history doesn't need near-real-time
 freshness) — bookmark the page, or open it any time you want a reading
 that's more current than the widget. It's not subject to iOS's home-screen widget

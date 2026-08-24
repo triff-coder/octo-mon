@@ -1198,20 +1198,65 @@ describe("computeDailyHistory", () => {
     vi.unstubAllGlobals();
   });
 
-  it("does not narrow, and propagates the error, for a non-404 consumption failure", async () => {
+  it("does not narrow on a non-404 consumption failure, and falls back to hour buckets instead of failing", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = input.toString();
+      if (url.includes("/consumption/")) {
+        return new Response("bad gateway", { status: 502 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const now = new Date("2026-01-31T10:00:00Z");
+    // No hour-bucket state seeded either, so the fallback itself has
+    // nothing to report -- the point of this test is that computeDailyHistory
+    // degrades to [] rather than rejecting.
+    const days = await computeDailyHistory(testEnv, now);
+    expect(days).toEqual([]);
+
+    const consumptionCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes("/consumption/"));
+    // A 502 isn't "no data this far back" -- only one attempt is made, no narrowing.
+    expect(consumptionCalls).toHaveLength(1);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("falls back to hour-bucket data when Octopus's consumption endpoint won't serve anything at all", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: string | URL | Request) => {
         const url = input.toString();
         if (url.includes("/consumption/")) {
-          return new Response("bad gateway", { status: 502 });
+          return new Response("not found", { status: 404 });
         }
         throw new Error(`Unexpected fetch: ${url}`);
       }),
     );
 
+    // Hour buckets already have a couple of days' worth of real data,
+    // collected independently by the cron's live telemetry polling.
+    await testEnv.OCTOMON_KV.put(
+      "hours:buckets",
+      JSON.stringify({
+        lastReadingAt: "2026-01-30T23:30:00.000Z",
+        buckets: [
+          { hourStart: "2026-01-29T10:00:00.000Z", kwhSoFar: 1, costGbpSoFar: 0.2 },
+          { hourStart: "2026-01-30T09:00:00.000Z", kwhSoFar: 2, costGbpSoFar: 0.4 },
+          { hourStart: "2026-01-30T23:00:00.000Z", kwhSoFar: 0.5, costGbpSoFar: 0.1 },
+          // Today -- must be excluded, same as the REST-backed path.
+          { hourStart: "2026-01-31T09:00:00.000Z", kwhSoFar: 99, costGbpSoFar: 20 },
+        ],
+      }),
+    );
+
     const now = new Date("2026-01-31T10:00:00Z");
-    await expect(computeDailyHistory(testEnv, now)).rejects.toThrow("HTTP 502");
+    const days = await computeDailyHistory(testEnv, now);
+
+    expect(days).toEqual([
+      { dateKey: "2026-01-29", kwh: 1, costGbp: 0.2 },
+      { dateKey: "2026-01-30", kwh: 2.5, costGbp: 0.5 },
+    ]);
 
     vi.unstubAllGlobals();
   });

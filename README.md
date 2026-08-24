@@ -235,9 +235,21 @@ reading — so for an account younger than 30 days, a naive fixed lookback
 would fail outright instead of returning the days it does have. The Worker
 handles this by halving the window on a 404 and retrying (30 → 15 → 7 → 3 →
 1 days) until Octopus serves it, so the endpoint returns whatever history
-actually exists rather than a hard error. The response is cached in KV for
-12 hours, since fully-past days never change and this doesn't need
-near-real-time freshness.
+actually exists rather than a hard error.
+
+If Octopus's consumption endpoint won't serve *anything* at all — seen in
+practice when the endpoint hadn't caught up yet on an account whose
+MPAN/tariff config was only just corrected, even though live telemetry was
+already working fine — the Worker falls back to summing its own hour-bucket
+accumulator (the same cached-in-KV data backing the 24-hour chart and the
+"yesterday" stat) instead of failing the request. That data comes purely
+from the cron's live telemetry polling, so it can never 404 or lag, but it
+only reaches back a matter of days (bounded by how long hour buckets are
+retained, tuned for the chart's 7-day-average needs) rather than the full
+30 — real history the Worker has already collected, just less of it, and it
+grows a little further back each day the Worker keeps running. The response
+is cached in KV for 12 hours, since fully-past days never change and this
+doesn't need near-real-time freshness.
 
 ### Web dashboard
 

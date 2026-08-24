@@ -631,6 +631,39 @@ async function fetchHistoricalConsumptionNarrowing(
 }
 
 /**
+ * Derives per-day totals directly from the hour-bucket accumulator — the
+ * same already-cached KV state backing the 24-hour chart and the
+ * "yesterday" stat — rather than Octopus's REST consumption endpoint. Used
+ * by computeDailyHistory as a fallback when that endpoint won't serve
+ * anything usable at all (see there): this data is already sitting in KV
+ * from the cron's live telemetry polling, so it can never 404 or lag, but
+ * it only reaches back as far as HOUR_BUCKET_RETENTION_HOURS (currently
+ * ~8 days) rather than the full 30 — real history the Worker has already
+ * collected, just less of it.
+ */
+function computeDailyHistoryFromHourBuckets(
+  state: HourBucketsState | null,
+  now: Date,
+): DailyHistoryEntry[] {
+  if (!state) return [];
+  const todayKey = londonDateKey(now);
+  const totalsByDay = new Map<string, { kwh: number; costGbp: number }>();
+
+  for (const bucket of state.buckets) {
+    const dayKey = londonDateKey(new Date(bucket.hourStart));
+    if (dayKey === todayKey) continue;
+    const totals = totalsByDay.get(dayKey) ?? { kwh: 0, costGbp: 0 };
+    totals.kwh += bucket.kwhSoFar;
+    totals.costGbp += bucket.costGbpSoFar;
+    totalsByDay.set(dayKey, totals);
+  }
+
+  return [...totalsByDay.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([dateKey, totals]) => ({ dateKey, kwh: totals.kwh, costGbp: totals.costGbp }));
+}
+
+/**
  * Computes per-day totals for up to the last DAILY_HISTORY_DAYS complete
  * Europe/London calendar days (never including today, which is always
  * still in progress), via a REST consumption fetch spanning the whole
@@ -641,6 +674,14 @@ async function fetchHistoricalConsumptionNarrowing(
  * cheap). A day with no consumption data at all is omitted entirely rather
  * than padded with a zero entry, so the list shows whatever history
  * actually exists instead of waiting for the full window to fill up.
+ *
+ * If Octopus's consumption endpoint won't serve anything at all (every
+ * window down to a single day 404s — seen in practice on an account whose
+ * meter/tariff config was only recently fixed, where the REST endpoint
+ * hadn't caught up yet even though live telemetry was working fine) this
+ * falls back to computeDailyHistoryFromHourBuckets instead of failing the
+ * whole request, same "best-effort, degrade gracefully" approach already
+ * used for the month backfill.
  */
 export async function computeDailyHistory(
   env: Env,
@@ -649,7 +690,16 @@ export async function computeDailyHistory(
   const todayKey = londonDateKey(now);
   const endExclusive = londonMidnightUtc(todayKey);
 
-  const intervals = await fetchHistoricalConsumptionNarrowing(env, todayKey, endExclusive);
+  let intervals: ConsumptionInterval[];
+  try {
+    intervals = await fetchHistoricalConsumptionNarrowing(env, todayKey, endExclusive);
+  } catch (error) {
+    console.error(
+      "octo-mon /history: Octopus consumption endpoint unavailable, falling back to accumulated hour-bucket data:",
+      error,
+    );
+    return computeDailyHistoryFromHourBuckets(await loadHourBuckets(env), now);
+  }
 
   const ratesCache = new Map<string, UnitRate[]>();
   const totalsByDay = new Map<string, { kwh: number; costGbp: number }>();

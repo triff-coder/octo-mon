@@ -1276,4 +1276,18 @@ describe("getOrComputeDailyHistory", () => {
 
     vi.unstubAllGlobals();
   });
+
+  it("recomputes on a new Europe/London calendar date instead of serving the previous day's cache", async () => {
+    const fetchMock = mockOctopusApi({ pencePerKwh: 20, consumption: [] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    // Well within the 12h TTL, but past the Europe/London midnight boundary.
+    await getOrComputeDailyHistory(testEnv, new Date("2026-01-31T23:50:00Z"));
+    await getOrComputeDailyHistory(testEnv, new Date("2026-02-01T00:10:00Z"));
+
+    const consumptionCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes("/consumption/"));
+    expect(consumptionCalls).toHaveLength(2);
+
+    vi.unstubAllGlobals();
+  });
 });

@@ -336,9 +336,10 @@ function buildStatusWidget(status, stale, dashboardUrl) {
     addCurrentUsageLines(widget);
   }
 
-  // Medium gets extra breathing room here — with the mini chart's new axis
-  // labels sitting right above, the stats row was reading as cramped.
-  widget.addSpacer(config.widgetFamily === "medium" ? 16 : 8);
+  // Medium gets a bit of breathing room here — with the mini chart's axis
+  // labels sitting right above — but kept fairly tight since the stats row
+  // now has a kWh line under each value and needs the vertical room.
+  widget.addSpacer(config.widgetFamily === "medium" ? 10 : 8);
 
   if (config.widgetFamily === "small") {
     const todayLabel = widget.addText("TODAY");
@@ -351,13 +352,13 @@ function buildStatusWidget(status, stale, dashboardUrl) {
   } else {
     // Side-by-side columns make far better use of a medium/large widget's
     // width than stacking stats vertically, which was overflowing the
-    // widget's height and getting clipped at the bottom. Four columns (down
-    // to label + value only, no subtext, and a smaller font than the
-    // original three-column version needed) keeps each one legible.
+    // widget's height and getting clipped at the bottom. Four columns
+    // (label, cost, then the equivalent kWh below it) with a smaller font
+    // than the original three-column version needed keeps each one legible.
     const statsRow = widget.addStack();
     statsRow.layoutHorizontally();
 
-    const addStatColumn = (label, valueText) => {
+    const addStatColumn = (label, valueText, kwh) => {
       const column = statsRow.addStack();
       column.layoutVertically();
       const labelText = column.addText(label);
@@ -366,15 +367,18 @@ function buildStatusWidget(status, stale, dashboardUrl) {
       const valueText_ = column.addText(valueText);
       valueText_.font = Font.boldSystemFont(15);
       valueText_.textColor = Color.white();
+      const kwhText = column.addText(`${kwh.toFixed(2)} kWh`);
+      kwhText.font = Font.systemFont(8);
+      kwhText.textColor = Color.gray();
     };
 
-    addStatColumn("LAST HR", formatPounds(status.lastHourCostGbp ?? 0));
+    addStatColumn("LAST HR", formatPounds(status.lastHourCostGbp ?? 0), status.lastHourKwh ?? 0);
     statsRow.addSpacer();
-    addStatColumn("TODAY", formatPounds(status.todayTotalCostGbp));
+    addStatColumn("TODAY", formatPounds(status.todayTotalCostGbp), status.todayTotalKwh);
     statsRow.addSpacer();
-    addStatColumn("YESTERDAY", formatPounds(status.yesterdayTotalCostGbp ?? 0));
+    addStatColumn("YESTERDAY", formatPounds(status.yesterdayTotalCostGbp ?? 0), status.yesterdayTotalKwh ?? 0);
     statsRow.addSpacer();
-    addStatColumn("MONTH", formatPounds(status.thisMonthTotalCostGbp));
+    addStatColumn("MONTH", formatPounds(status.thisMonthTotalCostGbp), status.thisMonthTotalKwh);
 
     if (config.widgetFamily === "large" && hourlyBuckets.length > 0) {
       widget.addSpacer(10);

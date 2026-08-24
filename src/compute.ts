@@ -198,18 +198,19 @@ const WEEKLY_AVERAGE_SAMPLE_DAYS = 7;
  * accumulating, or a gap) report £0.00 rather than being omitted, so the
  * chart always has exactly 24 bars.
  *
- * Each entry also carries `weeklyAvgCostGbp`: the average cost of that same
- * hour-of-day (e.g. "14:00 UTC") over up to the preceding 7 days, averaged
- * over however many of those days actually have data (0 if none yet) — lets
- * the widget plot "this hour vs. what this hour usually costs".
+ * Each entry also carries `kwh` (energy consumed that hour) and
+ * `weeklyAvgCostGbp`: the average cost of that same hour-of-day (e.g.
+ * "14:00 UTC") over up to the preceding 7 days, averaged over however many
+ * of those days actually have data (0 if none yet) — lets the widget plot
+ * "this hour vs. what this hour usually costs".
  */
 export function buildHourlyBuckets(
   state: HourBucketsState,
   now: Date,
-): { hourStart: string; costGbp: number; weeklyAvgCostGbp: number }[] {
+): { hourStart: string; costGbp: number; kwh: number; weeklyAvgCostGbp: number }[] {
   const currentHourStartMs = hourStartUtc(now).getTime();
   const bucketByStart = new Map(state.buckets.map((b) => [b.hourStart, b]));
-  const result: { hourStart: string; costGbp: number; weeklyAvgCostGbp: number }[] = [];
+  const result: { hourStart: string; costGbp: number; kwh: number; weeklyAvgCostGbp: number }[] = [];
 
   for (let i = 24; i >= 1; i--) {
     const hourStartMs = currentHourStartMs - i * 3_600_000;
@@ -229,6 +230,7 @@ export function buildHourlyBuckets(
     result.push({
       hourStart: hourStartIso,
       costGbp: bucket?.costGbpSoFar ?? 0,
+      kwh: bucket?.kwhSoFar ?? 0,
       weeklyAvgCostGbp: weeklyCount > 0 ? weeklySum / weeklyCount : 0,
     });
   }
@@ -487,6 +489,7 @@ export async function computeStatus(
 
   const hourlyBuckets = buildHourlyBuckets(hourBuckets, now);
   const lastHourCostGbp = hourlyBuckets.at(-1)?.costGbp ?? 0;
+  const lastHourKwh = hourlyBuckets.at(-1)?.kwh ?? 0;
   const nextAgileSlots = await resolveNextAgileSlots(env, jwt, todayRates, now);
   const yesterdayTotal = sumHourBucketsForLondonDate(hourBuckets, addDaysToDateKey(todayKey, -1));
 
@@ -504,6 +507,7 @@ export async function computeStatus(
     billingPeriodStart: monthAccumulator.periodKey,
     monthBackfillError: backfillError,
     lastHourCostGbp,
+    lastHourKwh,
     hourlyBuckets,
     nextAgileSlots,
     stale: false,

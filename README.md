@@ -147,9 +147,10 @@ You should get back JSON like:
   "billingPeriodStart": "2026-08-20",
   "monthBackfillError": null,
   "lastHourCostGbp": 0.21,
+  "lastHourKwh": 0.9,
   "hourlyBuckets": [
-    { "hourStart": "2026-08-20T15:00:00.000Z", "costGbp": 0.18, "weeklyAvgCostGbp": 0.22 },
-    { "hourStart": "2026-08-20T16:00:00.000Z", "costGbp": 0.24, "weeklyAvgCostGbp": 0.19 }
+    { "hourStart": "2026-08-20T15:00:00.000Z", "costGbp": 0.18, "kwh": 0.8, "weeklyAvgCostGbp": 0.22 },
+    { "hourStart": "2026-08-20T16:00:00.000Z", "costGbp": 0.24, "kwh": 1.0, "weeklyAvgCostGbp": 0.19 }
   ],
   "nextAgileSlots": [
     { "pencePerKwh": 6.9, "validFrom": "2026-08-21T21:02:49.000Z", "validTo": "2026-08-21T21:32:49.000Z" }
@@ -179,8 +180,8 @@ data for (e.g. before a Home Mini was installed) simply contributes zero.
 `hourlyBuckets` always has exactly 24 entries, oldest first, one per complete
 UTC clock hour (the sample above is truncated for brevity) — the current,
 still-in-progress hour is deliberately excluded so the chart never shows a
-misleadingly short final bar. `lastHourCostGbp` is that array's last entry.
-`weeklyAvgCostGbp` on each entry is the average cost of that same hour-of-day
+misleadingly short final bar. `lastHourCostGbp`/`lastHourKwh` are that
+array's last entry. `weeklyAvgCostGbp` on each entry is the average cost of that same hour-of-day
 (e.g. "15:00 UTC") over however many of the preceding 7 days actually have
 data (0 until at least one has landed). Unlike the month total, hour buckets
 are built purely from live telemetry going forward, with no historical
@@ -259,8 +260,8 @@ npm test
 The widget shows current £/hr (colour-coded low/medium/high: green under
 20p, amber 20-30p, red 30p+) and today's running total on every size. Medium
 and large widgets add last hour's, yesterday's, and this month's running
-total as extra columns, plus a 24-hour bar chart — medium fits a miniature
-version next to
+total as extra columns, each with the equivalent kWh figure underneath, plus
+a 24-hour bar chart — medium fits a miniature version next to
 the current-usage numbers, large gets a full-width one underneath the stats
 row. Each bar also carries a small mark at that hour-of-day's 7-day average,
 so you can see whether the current hour is running above or below what's

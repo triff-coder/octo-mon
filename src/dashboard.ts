@@ -67,6 +67,7 @@ export function renderDashboardHtml(token: string): string {
   .stats-row { display: flex; justify-content: space-between; margin-bottom: 24px; }
   .stat-label { font-size: 11px; font-weight: 600; color: #9aa0a8; margin: 0 0 4px; }
   .stat-value { font-size: 20px; font-weight: 700; margin: 0; }
+  .stat-kwh { font-size: 11px; color: #9aa0a8; margin: 2px 0 0; }
   #chartLabel { font-size: 11px; color: #9aa0a8; margin-bottom: 8px; }
   canvas { width: 100%; height: 160px; display: block; }
   #footer { font-size: 11px; color: #9aa0a8; margin-top: 16px; }
@@ -98,18 +99,22 @@ export function renderDashboardHtml(token: string): string {
     <div>
       <p class="stat-label">LAST HR</p>
       <p class="stat-value" id="lastHourCost">&mdash;</p>
+      <p class="stat-kwh" id="lastHourKwh">&mdash;</p>
     </div>
     <div>
       <p class="stat-label">TODAY</p>
       <p class="stat-value" id="todayCost">&mdash;</p>
+      <p class="stat-kwh" id="todayKwh">&mdash;</p>
     </div>
     <div>
       <p class="stat-label">YESTERDAY</p>
       <p class="stat-value" id="yesterdayCost">&mdash;</p>
+      <p class="stat-kwh" id="yesterdayKwh">&mdash;</p>
     </div>
     <div>
       <p class="stat-label">THIS MONTH</p>
       <p class="stat-value" id="monthCost">&mdash;</p>
+      <p class="stat-kwh" id="monthKwh">&mdash;</p>
     </div>
   </div>
 
@@ -130,9 +135,13 @@ export function renderDashboardHtml(token: string): string {
   var upcomingSectionEl = document.getElementById("upcomingSection");
   var upcomingRowEl = document.getElementById("upcomingRow");
   var lastHourCostEl = document.getElementById("lastHourCost");
+  var lastHourKwhEl = document.getElementById("lastHourKwh");
   var todayCostEl = document.getElementById("todayCost");
+  var todayKwhEl = document.getElementById("todayKwh");
   var yesterdayCostEl = document.getElementById("yesterdayCost");
+  var yesterdayKwhEl = document.getElementById("yesterdayKwh");
   var monthCostEl = document.getElementById("monthCost");
+  var monthKwhEl = document.getElementById("monthKwh");
   var staleBadgeEl = document.getElementById("staleBadge");
   var footerEl = document.getElementById("footer");
   var errorBannerEl = document.getElementById("errorBanner");
@@ -145,6 +154,10 @@ export function renderDashboardHtml(token: string): string {
 
   function formatPence(value) {
     return Number(value).toFixed(1) + "p";
+  }
+
+  function formatKwh(value) {
+    return Number(value).toFixed(2) + " kWh";
   }
 
   // Low/medium/high cost bands -- mirrors scriptable/OctoMon.js's
@@ -263,9 +276,13 @@ export function renderDashboardHtml(token: string): string {
     renderUpcoming(status.nextAgileSlots);
 
     lastHourCostEl.textContent = formatPounds(status.lastHourCostGbp || 0);
+    lastHourKwhEl.textContent = formatKwh(status.lastHourKwh || 0);
     todayCostEl.textContent = formatPounds(status.todayTotalCostGbp);
+    todayKwhEl.textContent = formatKwh(status.todayTotalKwh);
     yesterdayCostEl.textContent = formatPounds(status.yesterdayTotalCostGbp || 0);
+    yesterdayKwhEl.textContent = formatKwh(status.yesterdayTotalKwh || 0);
     monthCostEl.textContent = formatPounds(status.thisMonthTotalCostGbp);
+    monthKwhEl.textContent = formatKwh(status.thisMonthTotalKwh);
 
     drawChart(Array.isArray(status.hourlyBuckets) ? status.hourlyBuckets : []);
 

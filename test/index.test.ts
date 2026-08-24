@@ -44,6 +44,7 @@ const cachedStatus: StatusResponse = {
   billingPeriodStart: "2025-12-20",
   monthBackfillError: null,
   lastHourCostGbp: 0.4,
+  lastHourKwh: 2,
   hourlyBuckets: [],
   nextAgileSlots: [],
   stale: false,

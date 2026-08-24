@@ -519,7 +519,7 @@ describe("computeStatus", () => {
     vi.unstubAllGlobals();
   });
 
-  it("surfaces lastHourCostGbp and hourlyBuckets built from the same telemetry", async () => {
+  it("surfaces lastHourCostGbp/lastHourKwh and hourlyBuckets built from the same telemetry", async () => {
     vi.stubGlobal(
       "fetch",
       mockOctopusApi({
@@ -533,7 +533,9 @@ describe("computeStatus", () => {
 
     expect(status.hourlyBuckets).toHaveLength(24);
     expect(status.hourlyBuckets.at(-1)?.hourStart).toBe("2026-01-15T10:00:00.000Z");
+    expect(status.hourlyBuckets.at(-1)?.kwh).toBeCloseTo(1);
     expect(status.lastHourCostGbp).toBeCloseTo(0.1); // 1 kWh @ 10p
+    expect(status.lastHourKwh).toBeCloseTo(1);
     expect(hourBuckets.buckets.some((b) => b.hourStart === "2026-01-15T10:00:00.000Z")).toBe(true);
 
     vi.unstubAllGlobals();
@@ -979,6 +981,7 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       billingPeriodStart: "2025-12-20",
       monthBackfillError: null,
       lastHourCostGbp: 0.4,
+      lastHourKwh: 2,
       hourlyBuckets: [],
       nextAgileSlots: [],
       stale: false,
@@ -1016,6 +1019,7 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       billingPeriodStart: "2025-12-20",
       monthBackfillError: null,
       lastHourCostGbp: 0.4,
+      lastHourKwh: 2,
       hourlyBuckets: [],
       nextAgileSlots: [],
       stale: false,
@@ -1070,6 +1074,7 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       billingPeriodStart: "2025-12-20",
       monthBackfillError: null,
       lastHourCostGbp: 0.4,
+      lastHourKwh: 2,
       hourlyBuckets: [],
       nextAgileSlots: [],
       stale: false,

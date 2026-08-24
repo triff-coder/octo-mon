@@ -106,6 +106,8 @@ export interface StatusResponse {
   monthBackfillError: string | null;
   /** Cost of the most recently completed UTC clock hour (not the current in-progress one). */
   lastHourCostGbp: number;
+  /** kWh consumed in that same most recently completed UTC clock hour. */
+  lastHourKwh: number;
   /**
    * The last 24 complete UTC clock hours, oldest first. Built purely from
    * live telemetry (no backfill), so it fills in gradually over the first
@@ -114,7 +116,7 @@ export interface StatusResponse {
    * that same hour-of-day over the preceding up-to-7 days (0 until enough
    * history has accumulated), for an at-a-glance "vs. usual" comparison.
    */
-  hourlyBuckets: { hourStart: string; costGbp: number; weeklyAvgCostGbp: number }[];
+  hourlyBuckets: { hourStart: string; costGbp: number; kwh: number; weeklyAvgCostGbp: number }[];
   /**
    * Upcoming "smart charging" dispatch slots (e.g. Intelligent Octopus Go's
    * occasional off-schedule "bump charge" boosts), earliest first, chopped

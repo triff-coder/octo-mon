@@ -34,6 +34,10 @@ const CACHE_PATH = FileManager.local().joinPath(
   FileManager.local().documentsDirectory(),
   "octomon-status-cache.json",
 );
+const HISTORY_CACHE_PATH = FileManager.local().joinPath(
+  FileManager.local().documentsDirectory(),
+  "octomon-history-cache.json",
+);
 
 // Best-effort: overwrites this script's own file with the latest version
 // from GitHub if it has changed. This run keeps executing the code already
@@ -119,8 +123,14 @@ function dashboardUrlFor(workerUrl, sharedSecret) {
   return `${base}/dashboard?token=${encodeURIComponent(sharedSecret)}`;
 }
 
-async function fetchStatus(workerUrl, sharedSecret) {
-  const url = `${workerUrl}?token=${encodeURIComponent(sharedSecret)}`;
+// GET /history — same endpoint the dashboard's "LAST 30 DAYS" list uses,
+// also fetched by the large widget for its compact daily-history chart.
+function historyUrlFor(workerUrl, sharedSecret) {
+  const base = workerUrl.replace(/\/status\/?$/, "");
+  return `${base}/history?token=${encodeURIComponent(sharedSecret)}`;
+}
+
+async function fetchJson(url, sharedSecret) {
   const req = new Request(url);
   req.headers = { "X-Widget-Secret": sharedSecret };
   req.timeoutInterval = REQUEST_TIMEOUT_SECONDS;
@@ -131,6 +141,16 @@ async function fetchStatus(workerUrl, sharedSecret) {
     throw new Error(`Worker returned HTTP ${statusCode}`);
   }
   return json;
+}
+
+async function fetchStatus(workerUrl, sharedSecret) {
+  const url = `${workerUrl}?token=${encodeURIComponent(sharedSecret)}`;
+  return fetchJson(url, sharedSecret);
+}
+
+async function fetchHistory(workerUrl, sharedSecret) {
+  const json = await fetchJson(historyUrlFor(workerUrl, sharedSecret), sharedSecret);
+  return Array.isArray(json.days) ? json.days : [];
 }
 
 function loadCachedStatus() {
@@ -147,6 +167,20 @@ function saveCachedStatus(status) {
   FileManager.local().writeString(CACHE_PATH, JSON.stringify(status));
 }
 
+function loadCachedHistory() {
+  const fm = FileManager.local();
+  if (!fm.fileExists(HISTORY_CACHE_PATH)) return null;
+  try {
+    return JSON.parse(fm.readString(HISTORY_CACHE_PATH));
+  } catch (error) {
+    return null;
+  }
+}
+
+function saveCachedHistory(days) {
+  FileManager.local().writeString(HISTORY_CACHE_PATH, JSON.stringify(days));
+}
+
 function formatPounds(value) {
   return `£${value.toFixed(2)}`;
 }
@@ -157,6 +191,16 @@ function formatPence(value) {
 
 function formatTime(isoString) {
   return new Date(isoString).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// dateKey is a plain YYYY-MM-DD Europe/London calendar date -- parsed as
+// UTC noon so no local timezone offset can shift it onto the wrong day.
+function formatShortDate(dateKey) {
+  return new Date(`${dateKey}T12:00:00Z`).toLocaleDateString([], {
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  });
 }
 
 // Low/medium/high cost bands.
@@ -251,7 +295,67 @@ function buildHourlyChartImage(buckets, width, height, hourLabelInterval) {
   return dc.getImage();
 }
 
-function buildStatusWidget(status, stale, dashboardUrl) {
+// One bar per day (oldest on the left, most recent on the right, matching
+// the hourly chart's own left-to-right time flow), same styling family as
+// buildHourlyChartImage -- the large widget's compact equivalent of the web
+// dashboard's "LAST 30 DAYS" list, which has room for a per-day row with a
+// date/£/kWh label that a widget just doesn't have. A thin vertical rule
+// marks where a billing cycle ends (the 19th -> 20th boundary), and the
+// oldest/newest dates are labelled at either end so the axis still reads as
+// a timeline rather than an unlabeled sparkline.
+function buildDailyHistoryChartImage(days, width, height) {
+  const labelHeight = 12;
+  const chartHeight = height - labelHeight;
+
+  const dc = new DrawContext();
+  dc.size = new Size(width, height);
+  dc.opaque = false;
+  dc.respectScreenScale = true;
+
+  const maxCost = Math.max(...days.map((d) => d.costGbp), 0.01);
+  const gap = Math.max(1, width / days.length / 6);
+  const barWidth = (width - gap * (days.length - 1)) / days.length;
+  const barColor = new Color("#4FC3F7");
+  const boundaryColor = new Color("#FFFFFF", 0.35);
+  const labelColor = new Color("#9aa0a8");
+  const labelFont = Font.systemFont(9);
+
+  days.forEach((day, i) => {
+    const x = i * (barWidth + gap);
+    const barHeight = Math.max(2, (day.costGbp / maxCost) * chartHeight);
+    const barPath = new Path();
+    barPath.addRoundedRect(new Rect(x, chartHeight - barHeight, barWidth, barHeight), 1, 1);
+    dc.addPath(barPath);
+    dc.setFillColor(barColor);
+    dc.fillPath();
+
+    // Octopus's billing cycle rolls over on the 20th -- draw the divider
+    // just after the 19th's bar, i.e. right at the cycle boundary.
+    if (day.dateKey.slice(8, 10) === "19" && i < days.length - 1) {
+      const linePath = new Path();
+      linePath.addRect(new Rect(x + barWidth + gap / 2 - 0.5, 0, 1, chartHeight));
+      dc.addPath(linePath);
+      dc.setFillColor(boundaryColor);
+      dc.fillPath();
+    }
+  });
+
+  dc.setFont(labelFont);
+  dc.setTextColor(labelColor);
+  dc.setTextAlignedLeft();
+  dc.drawText(formatShortDate(days[0].dateKey), new Point(0, chartHeight + 1));
+  dc.setTextAlignedRight();
+  dc.drawText(formatShortDate(days[days.length - 1].dateKey), new Point(width, chartHeight + 1));
+
+  return dc.getImage();
+}
+
+function buildStatusWidget(status, stale, dashboardUrl, dailyHistory) {
+  // Large has more room to breathe than medium/small, which are already
+  // tightly fitted to their fixed sizes -- so it alone gets a bump across
+  // the board rather than resizing every family's shared helpers.
+  const isLarge = config.widgetFamily === "large";
+
   const widget = new ListWidget();
   widget.backgroundColor = new Color("#111318");
   widget.setPadding(12, 14, 12, 14);
@@ -260,12 +364,12 @@ function buildStatusWidget(status, stale, dashboardUrl) {
   const header = widget.addStack();
   header.centerAlignContent();
   const title = header.addText("⚡ Octopus");
-  title.font = Font.mediumSystemFont(12);
+  title.font = Font.mediumSystemFont(isLarge ? 13 : 12);
   title.textColor = Color.gray();
   header.addSpacer();
   if (stale) {
     const badge = header.addText("STALE");
-    badge.font = Font.boldSystemFont(10);
+    badge.font = Font.boldSystemFont(isLarge ? 11 : 10);
     badge.textColor = new Color("#EF5350");
   }
 
@@ -275,13 +379,13 @@ function buildStatusWidget(status, stale, dashboardUrl) {
 
   const addCurrentUsageLines = (container) => {
     const currentCostLine = container.addText(`${formatPounds(status.currentCostPerHourGbp)}/hr`);
-    currentCostLine.font = Font.boldSystemFont(22);
+    currentCostLine.font = Font.boldSystemFont(isLarge ? 26 : 22);
     currentCostLine.textColor = colorForRate(status.currentRate.pencePerKwh);
 
     const detailLine = container.addText(
       `${status.currentDemandKw.toFixed(2)} kW @ ${formatPence(status.currentRate.pencePerKwh)}/kWh`,
     );
-    detailLine.font = Font.systemFont(11);
+    detailLine.font = Font.systemFont(isLarge ? 13 : 11);
     detailLine.textColor = Color.gray();
   };
 
@@ -362,13 +466,13 @@ function buildStatusWidget(status, stale, dashboardUrl) {
       const column = statsRow.addStack();
       column.layoutVertically();
       const labelText = column.addText(label);
-      labelText.font = Font.mediumSystemFont(9);
+      labelText.font = Font.mediumSystemFont(isLarge ? 10 : 9);
       labelText.textColor = Color.gray();
       const valueText_ = column.addText(valueText);
-      valueText_.font = Font.boldSystemFont(15);
+      valueText_.font = Font.boldSystemFont(isLarge ? 18 : 15);
       valueText_.textColor = Color.white();
       const kwhText = column.addText(`${kwh.toFixed(2)} kWh`);
-      kwhText.font = Font.systemFont(8);
+      kwhText.font = Font.systemFont(isLarge ? 9 : 8);
       kwhText.textColor = Color.gray();
     };
 
@@ -380,19 +484,43 @@ function buildStatusWidget(status, stale, dashboardUrl) {
     statsRow.addSpacer();
     addStatColumn("MONTH", formatPounds(status.thisMonthTotalCostGbp), status.thisMonthTotalKwh);
 
-    if (config.widgetFamily === "large" && hourlyBuckets.length > 0) {
+    if (isLarge && hourlyBuckets.length > 0) {
       widget.addSpacer(10);
 
       const chartLabel = widget.addText("LAST 24 HOURS · mark = 7-day avg");
-      chartLabel.font = Font.mediumSystemFont(10);
+      chartLabel.font = Font.mediumSystemFont(11);
       chartLabel.textColor = Color.gray();
       widget.addSpacer(4);
 
       const chartWidth = 300;
-      const chartHeight = 70;
-      const chartImage = buildHourlyChartImage(hourlyBuckets, chartWidth, chartHeight);
-      const imageStack = widget.addImage(chartImage);
+      const chartHourLabelInterval = 3;
+      const chartHeight = 70 + 12; // bars + a labeled-every-3-hours axis strip
+      const chartImage = buildHourlyChartImage(hourlyBuckets, chartWidth, chartHeight, chartHourLabelInterval);
+      const chartRow = widget.addStack();
+      chartRow.layoutHorizontally();
+      chartRow.addSpacer();
+      const imageStack = chartRow.addImage(chartImage);
       imageStack.imageSize = new Size(chartWidth, chartHeight);
+      chartRow.addSpacer();
+
+      if (Array.isArray(dailyHistory) && dailyHistory.length > 0) {
+        widget.addSpacer(6);
+
+        const historyLabel = widget.addText("LAST 30 DAYS");
+        historyLabel.font = Font.mediumSystemFont(11);
+        historyLabel.textColor = Color.gray();
+        widget.addSpacer(4);
+
+        const historyChartWidth = 300;
+        const historyChartHeight = 40 + 12; // bars + a start/end date label strip
+        const historyChartImage = buildDailyHistoryChartImage(dailyHistory, historyChartWidth, historyChartHeight);
+        const historyRow = widget.addStack();
+        historyRow.layoutHorizontally();
+        historyRow.addSpacer();
+        const historyImageStack = historyRow.addImage(historyChartImage);
+        historyImageStack.imageSize = new Size(historyChartWidth, historyChartHeight);
+        historyRow.addSpacer();
+      }
     }
   }
 
@@ -401,7 +529,7 @@ function buildStatusWidget(status, stale, dashboardUrl) {
   const footer = widget.addText(
     stale ? `Stale since ${formatTime(status.generatedAt)}` : `Updated ${formatTime(status.generatedAt)}`,
   );
-  footer.font = Font.systemFont(9);
+  footer.font = Font.systemFont(isLarge ? 10 : 9);
   footer.textColor = stale ? new Color("#EF5350") : Color.gray();
 
   widget.refreshAfterDate = new Date(Date.now() + REFRESH_INTERVAL_MINUTES * 60 * 1000);
@@ -431,6 +559,22 @@ function buildErrorWidget(message) {
   return widget;
 }
 
+// Only the large widget shows the daily-history chart, so only it pays for
+// this extra request — small/medium skip it entirely. A failure here (or a
+// genuinely empty response) just means that section of the widget is
+// omitted; it never blocks the main status widget from rendering, and falls
+// back to the last successful response rather than an outright empty chart.
+async function getDailyHistoryForWidget(workerUrl, sharedSecret) {
+  if (config.widgetFamily !== "large") return null;
+  try {
+    const days = await fetchHistory(workerUrl, sharedSecret);
+    saveCachedHistory(days);
+    return days;
+  } catch (error) {
+    return loadCachedHistory();
+  }
+}
+
 async function run() {
   await selfUpdateIfNeeded();
 
@@ -443,11 +587,13 @@ async function run() {
     try {
       const status = await fetchStatus(workerUrl, sharedSecret);
       saveCachedStatus(status);
-      widget = buildStatusWidget(status, status.stale === true, dashboardUrl);
+      const dailyHistory = await getDailyHistoryForWidget(workerUrl, sharedSecret);
+      widget = buildStatusWidget(status, status.stale === true, dashboardUrl, dailyHistory);
     } catch (fetchError) {
       const cached = loadCachedStatus();
+      const dailyHistory = cached ? await getDailyHistoryForWidget(workerUrl, sharedSecret) : null;
       widget = cached
-        ? buildStatusWidget(cached, true, dashboardUrl)
+        ? buildStatusWidget(cached, true, dashboardUrl, dailyHistory)
         : buildErrorWidget(String(fetchError.message ?? fetchError));
     }
   } catch (configError) {

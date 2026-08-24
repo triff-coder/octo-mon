@@ -14,6 +14,11 @@ An iPhone home-screen widget (built with [Scriptable](https://scriptable.app/)) 
   over the last 24 complete hours, with a small mark on each bar showing what
   that hour-of-day has cost on average over the preceding week — so you can
   see at a glance whether right now is running above or below usual
+- **Daily history chart** (large widget only): a compact bar-per-day chart of
+  spend over the last 30 days (or however much history actually exists yet),
+  oldest on the left, with a thin marker where the Octopus billing cycle
+  rolls over — the widget-sized equivalent of the web dashboard's "LAST 30
+  DAYS" list, which has room for a full per-day row that a widget doesn't
 
 A small [Cloudflare Worker](https://workers.cloudflare.com/) sits in between the
 widget and Octopus: it holds your Octopus credentials as secrets, polls Octopus
@@ -207,9 +212,10 @@ that, the 5-minute cron keeps a warm snapshot so requests are fast.
 https://octo-mon.<your-subdomain>.workers.dev/history?token=<your WIDGET_SHARED_SECRET>
 ```
 
-Dashboard-only (the widget doesn't call this). Returns up to the last 30
-complete Europe/London calendar days of usage, oldest first — today is never
-included, since it's still in progress:
+Used by the dashboard's "LAST 30 DAYS" list and the large widget's daily
+history chart (small/medium widgets don't call this — no room to show it).
+Returns up to the last 30 complete Europe/London calendar days of usage,
+oldest first — today is never included, since it's still in progress:
 
 ```json
 {

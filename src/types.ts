@@ -139,7 +139,11 @@ export interface DailyHistoryEntry {
   costGbp: number;
 }
 
-/** The JSON payload served from GET /history — dashboard-only, not used by the widget. */
+/**
+ * The JSON payload served from GET /history — used by the dashboard's
+ * "LAST 30 DAYS" list and the large Scriptable widget's daily-history
+ * chart. Small/medium widgets don't call this endpoint.
+ */
 export interface DailyHistoryResponse {
   /**
    * Up to the last 30 complete Europe/London calendar days, oldest first

@@ -738,9 +738,10 @@ export async function computeDailyHistory(
 
 /**
  * Reads the cached daily-history snapshot for GET /history, computing and
- * caching a fresh one if it's missing or has expired. Dashboard-only —
- * the widget has no equivalent, there's no room for a 30-day list on a
- * home-screen widget.
+ * caching a fresh one if it's missing or has expired. Used by the
+ * dashboard's "LAST 30 DAYS" list and the large widget's compact daily
+ * history chart — small/medium widgets have no room for it and don't call
+ * this endpoint.
  */
 export async function getOrComputeDailyHistory(
   env: Env,

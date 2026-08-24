@@ -53,11 +53,18 @@ const UPCOMING_RATE_COUNT = 6;
 // under the point where Kraken's smartMeterTelemetry silently starts
 // returning nothing (see the fetchSince comment in computeStatus).
 const MAX_TELEMETRY_FETCH_HOURS = 6;
-const DAILY_HISTORY_KV_KEY = "history:daily";
+// Keyed per Europe/London calendar date (see getOrComputeDailyHistory) so a
+// midnight rollover busts the cache immediately instead of waiting out a
+// flat TTL — computeDailyHistory's output depends on `todayKey` (it's the
+// exclusive upper bound of the window), so yesterday's cached snapshot is
+// wrong the moment a new day starts, not just stale.
+const DAILY_HISTORY_KV_KEY_PREFIX = "history:daily:";
 // This settles slowly (consumption REST data lags) and never changes for
 // days that are already fully in the past, so there's no benefit to
 // refreshing it anywhere near as often as /status — cache-or-recompute on
 // a long TTL, same pattern as fetchUnitRatesForDay's per-day rate cache.
+// Purely an upper bound now that the key is date-scoped: it just controls
+// how long an unused day's entry lingers in KV before expiring.
 const DAILY_HISTORY_TTL_SECONDS = 12 * 60 * 60;
 const DAILY_HISTORY_DAYS = 30;
 
@@ -747,14 +754,15 @@ export async function getOrComputeDailyHistory(
   env: Env,
   now: Date = new Date(),
 ): Promise<DailyHistoryResponse> {
-  const cached = await getJson<DailyHistoryResponse>(env.OCTOMON_KV, DAILY_HISTORY_KV_KEY);
+  const kvKey = DAILY_HISTORY_KV_KEY_PREFIX + londonDateKey(now);
+  const cached = await getJson<DailyHistoryResponse>(env.OCTOMON_KV, kvKey);
   if (cached) return cached;
 
   const response: DailyHistoryResponse = {
     days: await computeDailyHistory(env, now),
     generatedAt: now.toISOString(),
   };
-  await putJson(env.OCTOMON_KV, DAILY_HISTORY_KV_KEY, response, {
+  await putJson(env.OCTOMON_KV, kvKey, response, {
     expirationTtl: DAILY_HISTORY_TTL_SECONDS,
   });
   return response;

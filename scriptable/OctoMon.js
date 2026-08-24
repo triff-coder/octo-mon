@@ -124,7 +124,7 @@ function dashboardUrlFor(workerUrl, sharedSecret) {
 }
 
 // GET /history — same endpoint the dashboard's "LAST 30 DAYS" list uses,
-// also fetched by the large widget for its compact daily-history chart.
+// also fetched by the large widget for its own (shorter) "LAST 7 DAYS" list.
 function historyUrlFor(workerUrl, sharedSecret) {
   const base = workerUrl.replace(/\/status\/?$/, "");
   return `${base}/history?token=${encodeURIComponent(sharedSecret)}`;
@@ -201,6 +201,12 @@ function formatShortDate(dateKey) {
     month: "short",
     timeZone: "UTC",
   });
+}
+
+// Octopus's billing cycle rolls over on the 20th of each month, so the 19th
+// is always the last day of a cycle — mirrors the dashboard's own check.
+function isBillingCycleEnd(dateKey) {
+  return dateKey.slice(8, 10) === "19";
 }
 
 // Low/medium/high cost bands.
@@ -295,59 +301,79 @@ function buildHourlyChartImage(buckets, width, height, hourLabelInterval) {
   return dc.getImage();
 }
 
-// One bar per day (oldest on the left, most recent on the right, matching
-// the hourly chart's own left-to-right time flow), same styling family as
-// buildHourlyChartImage -- the large widget's compact equivalent of the web
-// dashboard's "LAST 30 DAYS" list, which has room for a per-day row with a
-// date/£/kWh label that a widget just doesn't have. A thin vertical rule
-// marks where a billing cycle ends (the 19th -> 20th boundary), and the
-// oldest/newest dates are labelled at either end so the axis still reads as
-// a timeline rather than an unlabeled sparkline.
-function buildDailyHistoryChartImage(days, width, height) {
-  const labelHeight = 12;
-  const chartHeight = height - labelHeight;
+// One row per day, newest first (matching the web dashboard's "LAST 30
+// DAYS" list order), each with a background bar sized to that day's cost
+// relative to the busiest day shown and a date/£/kWh label -- the large
+// widget's version of that same list. ListWidget stacks can't overlay text
+// on top of a bar, so (like buildHourlyChartImage above) the whole list is
+// drawn as one DrawContext image. A widget only has room for about a week,
+// so this shows the last 7 days rather than the dashboard's full 30; a thin
+// rule marks a billing-cycle boundary (the 19th -> 20th) falling within
+// that window, mirroring the dashboard's "Billing cycle ends" divider.
+function buildDailyHistoryListImage(days, width) {
+  const rowHeight = 15;
+  const rowGap = 2;
+  const boundaryHeight = 7;
+  const kwhColumnWidth = 64; // reserves room for e.g. "12.34 kWh" right-aligned
+
+  const newestFirst = days.slice().reverse();
+  const hasBoundaryBefore = newestFirst.map((day) => isBillingCycleEnd(day.dateKey));
+  const boundaryCount = hasBoundaryBefore.filter(Boolean).length;
+  const height =
+    newestFirst.length * rowHeight + (newestFirst.length - 1) * rowGap + boundaryCount * boundaryHeight;
 
   const dc = new DrawContext();
   dc.size = new Size(width, height);
   dc.opaque = false;
   dc.respectScreenScale = true;
 
-  const maxCost = Math.max(...days.map((d) => d.costGbp), 0.01);
-  const gap = Math.max(1, width / days.length / 6);
-  const barWidth = (width - gap * (days.length - 1)) / days.length;
-  const barColor = new Color("#4FC3F7");
+  const maxCost = Math.max(...newestFirst.map((d) => d.costGbp), 0.01);
+  const barColor = new Color("#4FC3F7", 0.18);
   const boundaryColor = new Color("#FFFFFF", 0.35);
-  const labelColor = new Color("#9aa0a8");
-  const labelFont = Font.systemFont(9);
+  const dateColor = new Color("#cfd3d8");
+  const kwhColor = new Color("#9aa0a8");
+  const font = Font.systemFont(10);
+  const boldFont = Font.boldSystemFont(10);
 
-  days.forEach((day, i) => {
-    const x = i * (barWidth + gap);
-    const barHeight = Math.max(2, (day.costGbp / maxCost) * chartHeight);
+  let y = 0;
+  newestFirst.forEach((day, i) => {
+    if (hasBoundaryBefore[i]) {
+      const linePath = new Path();
+      linePath.addRect(new Rect(0, y + boundaryHeight / 2 - 0.5, width, 1));
+      dc.addPath(linePath);
+      dc.setFillColor(boundaryColor);
+      dc.fillPath();
+      y += boundaryHeight;
+    }
+
+    const barWidth = Math.max(width * 0.02, (day.costGbp / maxCost) * width);
     const barPath = new Path();
-    barPath.addRoundedRect(new Rect(x, chartHeight - barHeight, barWidth, barHeight), 1, 1);
+    barPath.addRoundedRect(new Rect(0, y, barWidth, rowHeight), 3, 3);
     dc.addPath(barPath);
     dc.setFillColor(barColor);
     dc.fillPath();
 
-    // Octopus's billing cycle rolls over on the 20th -- draw the divider
-    // just after the 19th's bar, i.e. right at the cycle boundary.
-    if (day.dateKey.slice(8, 10) === "19" && i < days.length - 1) {
-      const linePath = new Path();
-      linePath.addRect(new Rect(x + barWidth + gap / 2 - 0.5, 0, 1, chartHeight));
-      dc.addPath(linePath);
-      dc.setFillColor(boundaryColor);
-      dc.fillPath();
-    }
+    const textY = y + (rowHeight - 12) / 2;
+
+    dc.setFont(font);
+    dc.setTextColor(dateColor);
+    dc.setTextAlignedLeft();
+    dc.drawText(formatShortDate(day.dateKey), new Point(6, textY));
+
+    dc.setFont(boldFont);
+    dc.setTextColor(Color.white());
+    dc.setTextAlignedRight();
+    dc.drawText(formatPounds(day.costGbp), new Point(width - kwhColumnWidth - 6, textY));
+
+    dc.setFont(font);
+    dc.setTextColor(kwhColor);
+    dc.setTextAlignedRight();
+    dc.drawText(`${day.kwh.toFixed(2)} kWh`, new Point(width - 6, textY));
+
+    y += rowHeight + (i < newestFirst.length - 1 ? rowGap : 0);
   });
 
-  dc.setFont(labelFont);
-  dc.setTextColor(labelColor);
-  dc.setTextAlignedLeft();
-  dc.drawText(formatShortDate(days[0].dateKey), new Point(0, chartHeight + 1));
-  dc.setTextAlignedRight();
-  dc.drawText(formatShortDate(days[days.length - 1].dateKey), new Point(width, chartHeight + 1));
-
-  return dc.getImage();
+  return { image: dc.getImage(), height };
 }
 
 function buildStatusWidget(status, stale, dashboardUrl, dailyHistory) {
@@ -506,19 +532,22 @@ function buildStatusWidget(status, stale, dashboardUrl, dailyHistory) {
       if (Array.isArray(dailyHistory) && dailyHistory.length > 0) {
         widget.addSpacer(6);
 
-        const historyLabel = widget.addText("LAST 30 DAYS");
+        const historyLabel = widget.addText("LAST 7 DAYS");
         historyLabel.font = Font.mediumSystemFont(11);
         historyLabel.textColor = Color.gray();
         widget.addSpacer(4);
 
-        const historyChartWidth = 300;
-        const historyChartHeight = 40 + 12; // bars + a start/end date label strip
-        const historyChartImage = buildDailyHistoryChartImage(dailyHistory, historyChartWidth, historyChartHeight);
+        const historyListWidth = 300;
+        const recentDays = dailyHistory.slice(-7);
+        const { image: historyListImage, height: historyListHeight } = buildDailyHistoryListImage(
+          recentDays,
+          historyListWidth,
+        );
         const historyRow = widget.addStack();
         historyRow.layoutHorizontally();
         historyRow.addSpacer();
-        const historyImageStack = historyRow.addImage(historyChartImage);
-        historyImageStack.imageSize = new Size(historyChartWidth, historyChartHeight);
+        const historyImageStack = historyRow.addImage(historyListImage);
+        historyImageStack.imageSize = new Size(historyListWidth, historyListHeight);
         historyRow.addSpacer();
       }
     }
@@ -559,11 +588,11 @@ function buildErrorWidget(message) {
   return widget;
 }
 
-// Only the large widget shows the daily-history chart, so only it pays for
+// Only the large widget shows the daily-history list, so only it pays for
 // this extra request — small/medium skip it entirely. A failure here (or a
 // genuinely empty response) just means that section of the widget is
 // omitted; it never blocks the main status widget from rendering, and falls
-// back to the last successful response rather than an outright empty chart.
+// back to the last successful response rather than an outright empty list.
 async function getDailyHistoryForWidget(workerUrl, sharedSecret) {
   if (config.widgetFamily !== "large") return null;
   try {

@@ -227,9 +227,17 @@ consumption REST endpoint. A day the meter has no data for at all (e.g.
 before the Home Mini was installed, or a newer account that hasn't reached
 30 days of history yet) is omitted entirely rather than padded with a zero
 entry — so `days` can be shorter than 30 and simply grows day by day, rather
-than staying empty-looking until a full 30 days have passed. The response is
-cached in KV for 12 hours, since fully-past days never change and this
-doesn't need near-real-time freshness.
+than staying empty-looking until a full 30 days have passed.
+
+Octopus's consumption endpoint 404s the *entire* request (not just the
+missing days) if the requested period starts before the meter's earliest
+reading — so for an account younger than 30 days, a naive fixed lookback
+would fail outright instead of returning the days it does have. The Worker
+handles this by halving the window on a 404 and retrying (30 → 15 → 7 → 3 →
+1 days) until Octopus serves it, so the endpoint returns whatever history
+actually exists rather than a hard error. The response is cached in KV for
+12 hours, since fully-past days never change and this doesn't need
+near-real-time freshness.
 
 ### Web dashboard
 

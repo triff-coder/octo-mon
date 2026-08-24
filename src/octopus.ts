@@ -256,6 +256,18 @@ export async function fetchUnitRatesForDay(env: Env, dateKey: string): Promise<U
   return rates;
 }
 
+/**
+ * Thrown by fetchHistoricalConsumption so callers can distinguish "no data
+ * this far back" (404 — Octopus 404s the whole request if `periodFrom`
+ * predates the meter's earliest reading, rather than returning partial
+ * results) from other failures worth surfacing as a hard error.
+ */
+export class OctopusConsumptionError extends Error {
+  constructor(public readonly status: number) {
+    super(`Octopus consumption request failed: HTTP ${status}`);
+  }
+}
+
 interface RawConsumptionEntry {
   consumption: number;
   interval_start: string;
@@ -291,7 +303,7 @@ export async function fetchHistoricalConsumption(
   for (let page = 0; url && page < MAX_CONSUMPTION_PAGES; page++) {
     const response: Response = await fetch(url, { headers: { Authorization: authHeader } });
     if (!response.ok) {
-      throw new Error(`Octopus consumption request failed: HTTP ${response.status}`);
+      throw new OctopusConsumptionError(response.status);
     }
     const body = (await response.json()) as ConsumptionPage;
     results.push(...body.results);

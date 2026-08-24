@@ -5,6 +5,7 @@ import {
   fetchTelemetry,
   fetchUnitRatesForDay,
   obtainKrakenJwt,
+  OctopusConsumptionError,
 } from "./octopus";
 import type { DispatchWindow } from "./octopus";
 import {
@@ -20,6 +21,7 @@ import {
   secondsBetween,
 } from "./time";
 import type {
+  ConsumptionInterval,
   DailyHistoryEntry,
   DailyHistoryResponse,
   Env,
@@ -599,16 +601,46 @@ export async function getOrComputeStatus(
 }
 
 /**
+ * Fetches consumption for the DAILY_HISTORY_DAYS window ending `endExclusive`,
+ * narrowing the window toward `endExclusive` on a 404 rather than failing
+ * outright. Octopus 404s the *entire* request if `periodFrom` predates the
+ * meter's earliest reading (e.g. a newly set up account, or one only
+ * recently switched onto a working MPAN/meter serial) rather than returning
+ * partial results for the days it does have — so a fixed 30-day lookback
+ * would otherwise fail completely for any account younger than that, even
+ * though some of those days have perfectly good data. Halving the window on
+ * each 404 finds the largest window Octopus will actually serve in at most
+ * a handful of extra requests.
+ */
+async function fetchHistoricalConsumptionNarrowing(
+  env: Env,
+  todayKey: string,
+  endExclusive: Date,
+): Promise<ConsumptionInterval[]> {
+  for (let windowDays = DAILY_HISTORY_DAYS; windowDays >= 1; windowDays = Math.floor(windowDays / 2)) {
+    const start = londonMidnightUtc(addDaysToDateKey(todayKey, -windowDays));
+    try {
+      return await fetchHistoricalConsumption(env, start, endExclusive);
+    } catch (error) {
+      if (!(error instanceof OctopusConsumptionError) || error.status !== 404 || windowDays === 1) {
+        throw error;
+      }
+    }
+  }
+  return [];
+}
+
+/**
  * Computes per-day totals for up to the last DAILY_HISTORY_DAYS complete
  * Europe/London calendar days (never including today, which is always
- * still in progress), via a single REST consumption fetch spanning the
- * whole window, priced per-day against each day's published unit rates
- * (cached individually via fetchUnitRatesForDay, so repeat calls across
- * overlapping windows stay cheap). A day with no consumption data at all
- * (e.g. before the Home Mini was installed, or the account is younger
- * than DAILY_HISTORY_DAYS) is omitted entirely rather than padded with a
- * zero entry, so the list shows whatever history actually exists instead
- * of waiting for the full window to fill up.
+ * still in progress), via a REST consumption fetch spanning the whole
+ * window (narrowed automatically if the account doesn't have that much
+ * history yet — see fetchHistoricalConsumptionNarrowing), priced per-day
+ * against each day's published unit rates (cached individually via
+ * fetchUnitRatesForDay, so repeat calls across overlapping windows stay
+ * cheap). A day with no consumption data at all is omitted entirely rather
+ * than padded with a zero entry, so the list shows whatever history
+ * actually exists instead of waiting for the full window to fill up.
  */
 export async function computeDailyHistory(
   env: Env,
@@ -616,9 +648,8 @@ export async function computeDailyHistory(
 ): Promise<DailyHistoryEntry[]> {
   const todayKey = londonDateKey(now);
   const endExclusive = londonMidnightUtc(todayKey);
-  const start = londonMidnightUtc(addDaysToDateKey(todayKey, -DAILY_HISTORY_DAYS));
 
-  const intervals = await fetchHistoricalConsumption(env, start, endExclusive);
+  const intervals = await fetchHistoricalConsumptionNarrowing(env, todayKey, endExclusive);
 
   const ratesCache = new Map<string, UnitRate[]>();
   const totalsByDay = new Map<string, { kwh: number; costGbp: number }>();

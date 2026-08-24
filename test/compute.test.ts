@@ -1143,6 +1143,78 @@ describe("computeDailyHistory", () => {
 
     vi.unstubAllGlobals();
   });
+
+  it("narrows the consumption window on a 404 instead of failing the whole request", async () => {
+    // Simulates an account/meter younger than the full 30-day window --
+    // Octopus 404s any request whose period_from is before 2026-01-16, but
+    // serves anything from that date onward.
+    const earliestServed = new Date("2026-01-16T00:00:00Z").getTime();
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = input.toString();
+      if (url.includes("/standard-unit-rates/")) {
+        return jsonResponse({
+          count: 1,
+          next: null,
+          previous: null,
+          results: [
+            {
+              value_exc_vat: 9.52,
+              value_inc_vat: 20,
+              valid_from: "2000-01-01T00:00:00Z",
+              valid_to: "2100-01-01T00:00:00Z",
+              payment_method: "DIRECT_DEBIT",
+            },
+          ],
+        });
+      }
+      if (url.includes("/consumption/")) {
+        const periodFrom = new URL(url).searchParams.get("period_from") ?? "";
+        if (new Date(periodFrom).getTime() < earliestServed) {
+          return new Response("not found", { status: 404 });
+        }
+        return jsonResponse({
+          count: 1,
+          next: null,
+          previous: null,
+          results: [
+            { consumption: 2, interval_start: "2026-01-20T10:00:00Z", interval_end: "2026-01-20T10:30:00Z" },
+          ],
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const now = new Date("2026-01-31T10:00:00Z");
+    const days = await computeDailyHistory(testEnv, now);
+
+    expect(days).toEqual([{ dateKey: "2026-01-20", kwh: 2, costGbp: 0.4 }]);
+
+    const consumptionCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes("/consumption/"));
+    // The first (full 30-day) attempt 404s; halving the window to 15 days
+    // (period_from 2026-01-16) succeeds, so no further narrowing is needed.
+    expect(consumptionCalls).toHaveLength(2);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("does not narrow, and propagates the error, for a non-404 consumption failure", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const url = input.toString();
+        if (url.includes("/consumption/")) {
+          return new Response("bad gateway", { status: 502 });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    const now = new Date("2026-01-31T10:00:00Z");
+    await expect(computeDailyHistory(testEnv, now)).rejects.toThrow("HTTP 502");
+
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("getOrComputeDailyHistory", () => {

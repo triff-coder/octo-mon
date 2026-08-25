@@ -518,7 +518,22 @@ function buildStatusWidget(status, stale, dashboardUrl, dailyHistory) {
       chartLabel.textColor = Color.gray();
       widget.addSpacer(4);
 
-      const chartWidth = 300;
+      // WidgetKit never tells a script how wide its own frame actually is,
+      // and these two images are rasterized at a fixed pixel width up
+      // front, so that width has to be a guess conservative enough to
+      // survive every device's large-widget frame (roughly 300-380pt
+      // depending on screen size) minus the 14pt side padding above *and*
+      // whatever further system chrome/insets WidgetKit adds on top of
+      // that padding, which isn't publicly documented. A previous fix
+      // narrowed this from 300 to 280 and was still clipping the
+      // right-aligned kWh figure in the daily-history list badly, so this
+      // is deliberately well under any plausible available width rather
+      // than another small nudge; on wider devices the extra room just
+      // shows as blank margin either side (the row is centered), which is
+      // a much safer failure mode than text disappearing off the edge.
+      const largeWidgetContentWidth = 220;
+
+      const chartWidth = largeWidgetContentWidth;
       const chartHourLabelInterval = 3;
       const chartHeight = 70 + 12; // bars + a labeled-every-3-hours axis strip
       const chartImage = buildHourlyChartImage(hourlyBuckets, chartWidth, chartHeight, chartHourLabelInterval);
@@ -537,7 +552,7 @@ function buildStatusWidget(status, stale, dashboardUrl, dailyHistory) {
         historyLabel.textColor = Color.gray();
         widget.addSpacer(4);
 
-        const historyListWidth = 300;
+        const historyListWidth = largeWidgetContentWidth;
         const recentDays = dailyHistory.slice(-7);
         const { image: historyListImage, height: historyListHeight } = buildDailyHistoryListImage(
           recentDays,

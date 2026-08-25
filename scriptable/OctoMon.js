@@ -518,7 +518,18 @@ function buildStatusWidget(status, stale, dashboardUrl, dailyHistory) {
       chartLabel.textColor = Color.gray();
       widget.addSpacer(4);
 
-      const chartWidth = 300;
+      // The large widget's content width (frame minus the 14pt side padding
+      // above) is only ~301pt on the smallest widget-capable iPhones (SE),
+      // vs. ~310-336pt on everything else. These images were previously
+      // rendered at a fixed 300pt, which left ~1pt of margin on SE-class
+      // devices -- system rounding/insets ate into that and clipped the
+      // rightmost content, most visibly the right-aligned kWh figure in the
+      // daily-history list. Both are shrunk to a width that comfortably
+      // fits the smallest supported widget frame, and kept equal so the
+      // chart and list stay visually aligned underneath each other.
+      const largeWidgetContentWidth = 280;
+
+      const chartWidth = largeWidgetContentWidth;
       const chartHourLabelInterval = 3;
       const chartHeight = 70 + 12; // bars + a labeled-every-3-hours axis strip
       const chartImage = buildHourlyChartImage(hourlyBuckets, chartWidth, chartHeight, chartHourLabelInterval);
@@ -537,7 +548,7 @@ function buildStatusWidget(status, stale, dashboardUrl, dailyHistory) {
         historyLabel.textColor = Color.gray();
         widget.addSpacer(4);
 
-        const historyListWidth = 300;
+        const historyListWidth = largeWidgetContentWidth;
         const recentDays = dailyHistory.slice(-7);
         const { image: historyListImage, height: historyListHeight } = buildDailyHistoryListImage(
           recentDays,

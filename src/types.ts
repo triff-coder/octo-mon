@@ -57,6 +57,18 @@ export interface MonthAccumulator {
   kwhSoFar: number;
   costGbpSoFar: number;
   lastReadingAt: string;
+  /**
+   * Europe/London calendar date of the earliest day in this billing period
+   * that actually has recorded consumption data, as determined once at
+   * backfill time (or "today" if the period started today, or backfill
+   * found nothing). A brand-new account/meter, or one only recently fixed,
+   * can have Octopus report no consumption at all for the first few days of
+   * a period (e.g. before it was fully provisioned) — averaging cost so far
+   * over the full calendar span since periodKey would count those as £0
+   * days and understate the average, so predictMonthCostGbp averages from
+   * here instead.
+   */
+  firstDataDateKey: string;
 }
 
 /** Running totals for a single UTC clock hour, part of HourBucketsState. */

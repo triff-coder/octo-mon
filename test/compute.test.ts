@@ -244,6 +244,7 @@ describe("advanceMonthAccumulator", () => {
       kwhSoFar: 10,
       costGbpSoFar: 2,
       lastReadingAt: "2026-01-15T10:05:00Z",
+      firstDataDateKey: "2025-12-20",
     };
     const points = [
       { readAt: "2026-01-15T10:00:00Z", consumptionDeltaKwh: 1 }, // before cutoff, skipped
@@ -261,6 +262,7 @@ describe("advanceMonthAccumulator", () => {
       kwhSoFar: 250,
       costGbpSoFar: 50,
       lastReadingAt: "2025-12-19T23:00:00Z",
+      firstDataDateKey: "2025-11-20",
     };
 
     const acc = advanceMonthAccumulator(
@@ -502,6 +504,7 @@ describe("predictMonthCostGbp", () => {
       kwhSoFar: 34,
       costGbpSoFar: 17, // £1/day average over the 17 days elapsed so far
       lastReadingAt: now.toISOString(),
+      firstDataDateKey: "2025-12-20", // no gap -- data since day one
     };
 
     const predicted = predictMonthCostGbp(monthAccumulator, now);
@@ -518,10 +521,44 @@ describe("predictMonthCostGbp", () => {
       kwhSoFar: 2,
       costGbpSoFar: 0.5,
       lastReadingAt: now.toISOString(),
+      firstDataDateKey: "2025-12-20",
     };
 
     // 0.5 (cost so far) + (0.5 / 1) avg/day * 30 days left = 0.5 * 31.
     expect(predictMonthCostGbp(monthAccumulator, now)).toBeCloseTo(0.5 * 31);
+  });
+
+  it("averages from firstDataDateKey rather than periodKey, when the meter has no data for the period's first few days", () => {
+    // Billing period starts 2025-12-20, but the meter only started
+    // reporting data on the 23rd (e.g. a newly fixed account) -- "now" is
+    // the 29th, so there are 7 days with data (23rd..29th inclusive) and
+    // 10 calendar days elapsed since the period technically started.
+    const now = new Date("2025-12-29T12:00:00Z");
+    const monthAccumulator: MonthAccumulator = {
+      periodKey: "2025-12-20",
+      kwhSoFar: 45,
+      costGbpSoFar: 45.5, // averages to £6.50/day over the 7 real days of data
+      lastReadingAt: now.toISOString(),
+      firstDataDateKey: "2025-12-23",
+    };
+
+    const predicted = predictMonthCostGbp(monthAccumulator, now);
+
+    // Days left is still measured from the true period start (10 elapsed
+    // of 31 -> 21 left), but the average daily cost is 45.5 / 7, not 45.5 / 10.
+    expect(predicted).toBeCloseTo(45.5 + (45.5 / 7) * 21);
+  });
+
+  it("falls back to periodKey when firstDataDateKey is missing from an already-persisted accumulator", () => {
+    const now = new Date("2026-01-05T12:00:00Z");
+    const monthAccumulator = {
+      periodKey: "2025-12-20",
+      kwhSoFar: 34,
+      costGbpSoFar: 17,
+      lastReadingAt: now.toISOString(),
+    } as MonthAccumulator;
+
+    expect(predictMonthCostGbp(monthAccumulator, now)).toBeCloseTo(31);
   });
 });
 
@@ -576,6 +613,7 @@ describe("computeStatus", () => {
       kwhSoFar: 40,
       costGbpSoFar: 4,
       lastReadingAt: "2026-01-15T10:05:00Z",
+      firstDataDateKey: "2025-12-20",
     };
 
     const { status } = await computeStatus(
@@ -611,6 +649,7 @@ describe("computeStatus", () => {
       kwhSoFar: 99,
       costGbpSoFar: 20,
       lastReadingAt: "2026-01-19T23:00:00Z",
+      firstDataDateKey: "2025-12-20",
     };
 
     const { status, monthAccumulator } = await computeStatus(
@@ -909,6 +948,7 @@ describe("computeStatus month/today invariant", () => {
       kwhSoFar: 0,
       costGbpSoFar: 0,
       lastReadingAt: "2026-01-15T10:05:00Z",
+      firstDataDateKey: "2025-12-20",
     };
 
     const { status, monthAccumulator } = await computeStatus(
@@ -957,6 +997,40 @@ describe("computeStatus month backfill", () => {
     expect(status.thisMonthTotalKwh).toBeCloseTo(6);
     expect(status.thisMonthTotalCostGbp).toBeCloseTo(0.6);
     expect(monthAccumulator.periodKey).toBe("2025-12-20");
+    // Backfilled data actually starts on the 14th, not the period's own
+    // start on the 20th (of the previous month) -- predictMonthCostGbp
+    // averages from here, not from periodKey.
+    expect(monthAccumulator.firstDataDateKey).toBe("2026-01-14");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("sets firstDataDateKey to the first day Octopus actually reports data for, not the period's own start", async () => {
+    // A brand-new/only-recently-fixed meter: the billing period started on
+    // 2025-12-20, but Octopus's consumption endpoint has nothing at all for
+    // the first few days of the period -- only from 2025-12-23 onward.
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2025-12-29T10:00:00Z", demand: 500, consumptionDelta: 1000 }],
+        pencePerKwh: 10,
+        consumption: [
+          { consumptionKwh: 5, intervalStart: "2025-12-23T10:00:00Z", intervalEnd: "2025-12-23T10:30:00Z" },
+          { consumptionKwh: 5, intervalStart: "2025-12-24T10:00:00Z", intervalEnd: "2025-12-24T10:30:00Z" },
+        ],
+      }),
+    );
+
+    const { monthAccumulator } = await computeStatus(
+      testEnv,
+      null,
+      null,
+      null,
+      new Date("2025-12-29T10:01:00Z"),
+    );
+
+    expect(monthAccumulator.periodKey).toBe("2025-12-20");
+    expect(monthAccumulator.firstDataDateKey).toBe("2025-12-23");
 
     vi.unstubAllGlobals();
   });
@@ -984,6 +1058,7 @@ describe("computeStatus month backfill", () => {
     expect(status.thisMonthTotalKwh).toBeCloseTo(1);
     expect(status.thisMonthTotalCostGbp).toBeCloseTo(0.1);
     expect(monthAccumulator.periodKey).toBe("2025-12-20");
+    expect(monthAccumulator.firstDataDateKey).toBe("2026-01-15");
     // The failure reason is still surfaced in the response rather than only
     // logged, so it's diagnosable without dashboard log access.
     expect(status.monthBackfillError).toContain("404");
@@ -1019,6 +1094,7 @@ describe("computeStatus month backfill", () => {
       kwhSoFar: 40,
       costGbpSoFar: 4,
       lastReadingAt: "2026-01-15T10:05:00Z",
+      firstDataDateKey: "2025-12-20",
     };
 
     await computeStatus(testEnv, null, previousMonth, null, new Date("2026-01-15T10:11:00Z"));
@@ -1027,6 +1103,44 @@ describe("computeStatus month backfill", () => {
       String(url).includes("/consumption/"),
     );
     expect(consumptionCalls).toHaveLength(0);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("migrates an accumulator persisted before firstDataDateKey existed, without losing its running totals", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:10:00Z", demand: 500, consumptionDelta: 1000 }],
+        pencePerKwh: 10,
+        // Only the date of these matters for the migration lookup -- it
+        // doesn't re-sum kwh/cost from them, just finds the earliest day.
+        consumption: [
+          { consumptionKwh: 5, intervalStart: "2026-01-10T10:00:00Z", intervalEnd: "2026-01-10T10:30:00Z" },
+        ],
+      }),
+    );
+
+    // Simulates KV state written before this field was introduced.
+    const previousMonth = {
+      periodKey: "2025-12-20",
+      kwhSoFar: 40,
+      costGbpSoFar: 4,
+      lastReadingAt: "2026-01-15T10:05:00Z",
+    } as MonthAccumulator;
+
+    const { monthAccumulator } = await computeStatus(
+      testEnv,
+      null,
+      previousMonth,
+      null,
+      new Date("2026-01-15T10:11:00Z"),
+    );
+
+    // The running totals are preserved exactly -- only the missing field is filled in.
+    expect(monthAccumulator.kwhSoFar).toBeCloseTo(41);
+    expect(monthAccumulator.costGbpSoFar).toBeCloseTo(4.1);
+    expect(monthAccumulator.firstDataDateKey).toBe("2026-01-10");
 
     vi.unstubAllGlobals();
   });

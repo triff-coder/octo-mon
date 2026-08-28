@@ -118,6 +118,18 @@ export interface StatusResponse {
    */
   hourlyBuckets: { hourStart: string; costGbp: number; kwh: number; weeklyAvgCostGbp: number }[];
   /**
+   * Predicted total cost for today (Europe/London calendar day): today's
+   * actual cost so far plus, for each hour of today still to come, that
+   * hour-of-day's average cost over up to the preceding 7 days.
+   */
+  predictedTodayCostGbp: number;
+  /**
+   * Predicted total cost for the current Octopus billing period, by
+   * extrapolating the average daily cost so far (including today) across
+   * the whole period.
+   */
+  predictedMonthCostGbp: number;
+  /**
    * Upcoming "smart charging" dispatch slots (e.g. Intelligent Octopus Go's
    * occasional off-schedule "bump charge" boosts), earliest first, chopped
    * into 30-minute windows priced at today's off-peak rate. This is *not*

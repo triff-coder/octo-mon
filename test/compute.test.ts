@@ -14,6 +14,8 @@ import {
   loadMonthAccumulator,
   loadTodayAccumulator,
   persistComputedStatus,
+  predictMonthCostGbp,
+  predictTodayCostGbp,
 } from "../src/compute";
 import type {
   Env,
@@ -416,6 +418,68 @@ describe("buildHourlyBuckets", () => {
 
     expect(target?.costGbp).toBeCloseTo(0.5);
     expect(target?.weeklyAvgCostGbp).toBeCloseTo((0.3 + 0.1) / 2);
+  });
+});
+
+describe("predictTodayCostGbp", () => {
+  it("adds today's so-far cost to the 7-day average of each hour still to come", () => {
+    // Local London midnight is 2026-01-15T00:00:00Z in January (GMT), so
+    // today runs 00:00Z-24:00Z; "now" is mid-way through the 10:00Z hour.
+    const now = new Date("2026-01-15T10:30:00Z");
+    const state: HourBucketsState = {
+      buckets: [
+        // The next remaining hour today, 11:00Z, cost 0.4 on each of the
+        // last two days at that same hour-of-day -> average 0.4.
+        { hourStart: "2026-01-14T11:00:00.000Z", kwhSoFar: 1, costGbpSoFar: 0.4 },
+        { hourStart: "2026-01-13T11:00:00.000Z", kwhSoFar: 1, costGbpSoFar: 0.4 },
+        // An hour-of-day already elapsed today (08:00Z) must not leak into
+        // any remaining hour's average.
+        { hourStart: "2026-01-14T08:00:00.000Z", kwhSoFar: 1, costGbpSoFar: 99 },
+      ],
+      lastReadingAt: "2026-01-15T10:15:00Z",
+    };
+
+    const predicted = predictTodayCostGbp(state, 2, now);
+
+    // 2 (today so far) + sum of averages for the 13 remaining hours
+    // (11:00Z..23:00Z): only 11:00Z has history (avg 0.4), the rest are 0.
+    expect(predicted).toBeCloseTo(2 + 0.4);
+  });
+
+  it("predicts just today's so-far total when no hour has any history yet", () => {
+    const now = new Date("2026-01-15T10:30:00Z");
+    const state: HourBucketsState = { buckets: [], lastReadingAt: new Date(0).toISOString() };
+
+    expect(predictTodayCostGbp(state, 1.5, now)).toBeCloseTo(1.5);
+  });
+});
+
+describe("predictMonthCostGbp", () => {
+  it("extrapolates the average daily cost so far (including today) across the whole billing period", () => {
+    // January's billing period runs 2025-12-20..2026-01-19 inclusive (31 days).
+    const now = new Date("2026-01-05T12:00:00Z"); // day 17 of the period (Dec 20 .. Jan 5 inclusive)
+    const monthAccumulator: MonthAccumulator = {
+      periodKey: "2025-12-20",
+      kwhSoFar: 34,
+      costGbpSoFar: 17, // avg 1/day over 17 elapsed days
+      lastReadingAt: now.toISOString(),
+    };
+
+    const predicted = predictMonthCostGbp(monthAccumulator, now);
+
+    expect(predicted).toBeCloseTo((17 / 17) * 31);
+  });
+
+  it("extrapolates from a single elapsed day on the first day of a billing period", () => {
+    const now = new Date("2025-12-20T08:00:00Z"); // day 1 of a 31-day period
+    const monthAccumulator: MonthAccumulator = {
+      periodKey: "2025-12-20",
+      kwhSoFar: 2,
+      costGbpSoFar: 0.5,
+      lastReadingAt: now.toISOString(),
+    };
+
+    expect(predictMonthCostGbp(monthAccumulator, now)).toBeCloseTo((0.5 / 1) * 31);
   });
 });
 
@@ -985,6 +1049,8 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       lastHourCostGbp: 0.4,
       lastHourKwh: 2,
       hourlyBuckets: [],
+      predictedTodayCostGbp: 0,
+      predictedMonthCostGbp: 0,
       nextAgileSlots: [],
       stale: false,
       snapshotAgeSeconds: 0,
@@ -1023,6 +1089,8 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       lastHourCostGbp: 0.4,
       lastHourKwh: 2,
       hourlyBuckets: [],
+      predictedTodayCostGbp: 0,
+      predictedMonthCostGbp: 0,
       nextAgileSlots: [],
       stale: false,
       snapshotAgeSeconds: 0,
@@ -1078,6 +1146,8 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       lastHourCostGbp: 0.4,
       lastHourKwh: 2,
       hourlyBuckets: [],
+      predictedTodayCostGbp: 0,
+      predictedMonthCostGbp: 0,
       nextAgileSlots: [],
       stale: false,
       snapshotAgeSeconds: 0,

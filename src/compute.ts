@@ -209,6 +209,28 @@ export function advanceHourBuckets(
 const WEEKLY_AVERAGE_SAMPLE_DAYS = 7;
 
 /**
+ * The average cost of the hour starting at `hourStartMs` over up to the
+ * preceding `WEEKLY_AVERAGE_SAMPLE_DAYS` days (same hour-of-day, one or more
+ * exact 24h multiples back), averaged over however many of those days
+ * actually have a bucket (0 if none yet). Shared by buildHourlyBuckets (past
+ * hours, for the chart's "vs. usual" marks) and predictTodayCostGbp (future
+ * hours still to come today, which have exactly the same "what did this
+ * hour-of-day cost on past days" question).
+ */
+function averageWeeklyCostForHour(bucketByStart: Map<string, { costGbpSoFar: number }>, hourStartMs: number): number {
+  let weeklySum = 0;
+  let weeklyCount = 0;
+  for (let day = 1; day <= WEEKLY_AVERAGE_SAMPLE_DAYS; day++) {
+    const pastBucket = bucketByStart.get(new Date(hourStartMs - day * 24 * 3_600_000).toISOString());
+    if (pastBucket) {
+      weeklySum += pastBucket.costGbpSoFar;
+      weeklyCount += 1;
+    }
+  }
+  return weeklyCount > 0 ? weeklySum / weeklyCount : 0;
+}
+
+/**
  * Normalizes hour-bucket state into exactly 24 entries, oldest first,
  * covering the last 24 *complete* UTC clock hours (never the current
  * in-progress hour, which would otherwise render as a misleadingly short
@@ -235,25 +257,55 @@ export function buildHourlyBuckets(
     const hourStartIso = new Date(hourStartMs).toISOString();
     const bucket = bucketByStart.get(hourStartIso);
 
-    let weeklySum = 0;
-    let weeklyCount = 0;
-    for (let day = 1; day <= WEEKLY_AVERAGE_SAMPLE_DAYS; day++) {
-      const pastBucket = bucketByStart.get(new Date(hourStartMs - day * 24 * 3_600_000).toISOString());
-      if (pastBucket) {
-        weeklySum += pastBucket.costGbpSoFar;
-        weeklyCount += 1;
-      }
-    }
-
     result.push({
       hourStart: hourStartIso,
       costGbp: bucket?.costGbpSoFar ?? 0,
       kwh: bucket?.kwhSoFar ?? 0,
-      weeklyAvgCostGbp: weeklyCount > 0 ? weeklySum / weeklyCount : 0,
+      weeklyAvgCostGbp: averageWeeklyCostForHour(bucketByStart, hourStartMs),
     });
   }
 
   return result;
+}
+
+/**
+ * Predicts today's (Europe/London calendar day) total cost: today's actual
+ * cost so far (which already covers the current in-progress hour) plus, for
+ * each remaining hour of today that hasn't started yet, that hour-of-day's
+ * average cost over up to the preceding 7 days (see averageWeeklyCostForHour
+ * — 0 for an hour with no history yet, so a brand-new account predicts just
+ * today's so-far total rather than throwing).
+ */
+export function predictTodayCostGbp(hourBuckets: HourBucketsState, todayCostSoFarGbp: number, now: Date): number {
+  const bucketByStart = new Map(hourBuckets.buckets.map((b) => [b.hourStart, b]));
+  const dayEndMs = nextLondonMidnightUtc(now).getTime();
+  const nextHourStartMs = hourStartUtc(now).getTime() + 3_600_000;
+
+  let predictedRemaining = 0;
+  for (let hourStartMs = nextHourStartMs; hourStartMs < dayEndMs; hourStartMs += 3_600_000) {
+    predictedRemaining += averageWeeklyCostForHour(bucketByStart, hourStartMs);
+  }
+
+  return todayCostSoFarGbp + predictedRemaining;
+}
+
+/**
+ * Predicts the current Octopus billing period's (see billingPeriodKey) total
+ * cost by extrapolating the average daily cost so far (including today,
+ * counted as a full day slot even though it's only partway through) across
+ * however many days the whole period spans. Returns just the cost-so-far
+ * on day one of a period (nothing to average yet).
+ */
+export function predictMonthCostGbp(monthAccumulator: MonthAccumulator, now: Date): number {
+  const periodStart = londonMidnightUtc(monthAccumulator.periodKey);
+  const periodEnd = nextBillingPeriodStartUtc(now);
+  const todayStart = londonMidnightUtc(londonDateKey(now));
+
+  const daysElapsed = Math.round((todayStart.getTime() - periodStart.getTime()) / 86_400_000) + 1;
+  const totalDays = Math.round((periodEnd.getTime() - periodStart.getTime()) / 86_400_000);
+  if (daysElapsed <= 0) return monthAccumulator.costGbpSoFar;
+
+  return (monthAccumulator.costGbpSoFar / daysElapsed) * totalDays;
 }
 
 /**
@@ -510,6 +562,8 @@ export async function computeStatus(
   const lastHourKwh = hourlyBuckets.at(-1)?.kwh ?? 0;
   const nextAgileSlots = await resolveNextAgileSlots(env, jwt, todayRates, now);
   const yesterdayTotal = sumHourBucketsForLondonDate(hourBuckets, addDaysToDateKey(todayKey, -1));
+  const predictedTodayCostGbp = predictTodayCostGbp(hourBuckets, accumulator.costGbpSoFar, now);
+  const predictedMonthCostGbp = predictMonthCostGbp(monthAccumulator, now);
 
   const status: StatusResponse = {
     generatedAt: now.toISOString(),
@@ -527,6 +581,8 @@ export async function computeStatus(
     lastHourCostGbp,
     lastHourKwh,
     hourlyBuckets,
+    predictedTodayCostGbp,
+    predictedMonthCostGbp,
     nextAgileSlots,
     stale: false,
     snapshotAgeSeconds: 0,

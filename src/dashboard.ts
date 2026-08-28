@@ -68,6 +68,8 @@ export function renderDashboardHtml(token: string): string {
   .stat-label { font-size: 11px; font-weight: 600; color: #9aa0a8; margin: 0 0 4px; }
   .stat-value { font-size: 20px; font-weight: 700; margin: 0; }
   .stat-kwh { font-size: 11px; color: #9aa0a8; margin: 2px 0 0; }
+  #predictedLabel { font-size: 11px; font-weight: 600; color: #9aa0a8; margin: 0 0 8px; }
+  .predicted-row { display: flex; gap: 32px; margin-bottom: 24px; }
   #chartLabel { font-size: 11px; color: #9aa0a8; margin-bottom: 8px; }
   canvas { width: 100%; height: 160px; display: block; }
   #historyLabel { font-size: 11px; color: #9aa0a8; margin: 24px 0 8px; }
@@ -141,6 +143,18 @@ export function renderDashboardHtml(token: string): string {
     </div>
   </div>
 
+  <p id="predictedLabel">PREDICTED</p>
+  <div class="predicted-row" id="predictedRow">
+    <div>
+      <p class="stat-label">TODAY TOTAL</p>
+      <p class="stat-value" id="predictedTodayCost">&mdash;</p>
+    </div>
+    <div>
+      <p class="stat-label">MONTH TOTAL</p>
+      <p class="stat-value" id="predictedMonthCost">&mdash;</p>
+    </div>
+  </div>
+
   <p id="chartLabel">LAST 24 HOURS &middot; mark = 7-day avg</p>
   <canvas id="chart" width="960" height="320"></canvas>
 
@@ -168,6 +182,8 @@ export function renderDashboardHtml(token: string): string {
   var yesterdayKwhEl = document.getElementById("yesterdayKwh");
   var monthCostEl = document.getElementById("monthCost");
   var monthKwhEl = document.getElementById("monthKwh");
+  var predictedTodayCostEl = document.getElementById("predictedTodayCost");
+  var predictedMonthCostEl = document.getElementById("predictedMonthCost");
   var staleBadgeEl = document.getElementById("staleBadge");
   var historyListEl = document.getElementById("historyList");
   var footerEl = document.getElementById("footer");
@@ -402,6 +418,8 @@ export function renderDashboardHtml(token: string): string {
     yesterdayKwhEl.textContent = formatKwh(status.yesterdayTotalKwh || 0);
     monthCostEl.textContent = formatPounds(status.thisMonthTotalCostGbp);
     monthKwhEl.textContent = formatKwh(status.thisMonthTotalKwh);
+    predictedTodayCostEl.textContent = formatPounds(status.predictedTodayCostGbp || 0);
+    predictedMonthCostEl.textContent = formatPounds(status.predictedMonthCostGbp || 0);
 
     drawChart(Array.isArray(status.hourlyBuckets) ? status.hourlyBuckets : []);
 

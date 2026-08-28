@@ -46,6 +46,8 @@ const cachedStatus: StatusResponse = {
   lastHourCostGbp: 0.4,
   lastHourKwh: 2,
   hourlyBuckets: [],
+  predictedTodayCostGbp: 0,
+  predictedMonthCostGbp: 0,
   nextAgileSlots: [],
   stale: false,
   snapshotAgeSeconds: 0,

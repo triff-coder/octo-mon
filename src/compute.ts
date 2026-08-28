@@ -297,46 +297,22 @@ export function predictTodayCostGbp(hourBuckets: HourBucketsState, todayCostSoFa
 
 /**
  * Predicts the current Octopus billing period's (see billingPeriodKey) total
- * cost: the actual cost so far, plus `predictedTodayCostGbp`'s own predicted
- * remainder for the rest of today, plus the average cost of each *complete*
- * day so far this period extrapolated across the days still to come after
- * today.
- *
- * Deliberately excludes today from that daily average rather than counting
- * it as a full day slot: today is only ever partially elapsed, so folding
- * its (necessarily incomplete) contribution into a per-day average would
- * systematically deflate it — worst right after local midnight, when
- * today has contributed almost nothing but would still count as a whole
- * day in the divisor. `predictedTodayCostGbp` already covers today's own
- * projection using the finer-grained hourly averages.
- *
- * On day one of a period there's no completed day yet to average from, so
- * this falls back to today's own predicted total extrapolated across the
- * whole period instead.
+ * cost: the actual cost so far, plus the average daily cost so far this
+ * period (cost so far divided by however many days — including today,
+ * counted as a whole day — have elapsed) multiplied by the days still left
+ * in the period.
  */
-export function predictMonthCostGbp(
-  monthAccumulator: MonthAccumulator,
-  todayCostSoFarGbp: number,
-  predictedTodayCostGbp: number,
-  now: Date,
-): number {
+export function predictMonthCostGbp(monthAccumulator: MonthAccumulator, now: Date): number {
   const periodStart = londonMidnightUtc(monthAccumulator.periodKey);
   const periodEnd = nextBillingPeriodStartUtc(now);
   const todayStart = londonMidnightUtc(londonDateKey(now));
 
-  const fullDaysElapsed = Math.round((todayStart.getTime() - periodStart.getTime()) / 86_400_000);
+  const daysElapsed = Math.round((todayStart.getTime() - periodStart.getTime()) / 86_400_000) + 1;
   const totalDays = Math.round((periodEnd.getTime() - periodStart.getTime()) / 86_400_000);
-  const predictedTodayRemainderGbp = predictedTodayCostGbp - todayCostSoFarGbp;
+  const daysLeft = Math.max(0, totalDays - daysElapsed);
 
-  if (fullDaysElapsed <= 0) {
-    return predictedTodayCostGbp * totalDays;
-  }
-
-  const priorDaysCostGbp = monthAccumulator.costGbpSoFar - todayCostSoFarGbp;
-  const avgFullDailyCostGbp = priorDaysCostGbp / fullDaysElapsed;
-  const remainingFullDays = Math.max(0, totalDays - fullDaysElapsed - 1);
-
-  return monthAccumulator.costGbpSoFar + predictedTodayRemainderGbp + avgFullDailyCostGbp * remainingFullDays;
+  const avgDailyCostSoFarGbp = monthAccumulator.costGbpSoFar / daysElapsed;
+  return monthAccumulator.costGbpSoFar + avgDailyCostSoFarGbp * daysLeft;
 }
 
 /**
@@ -594,12 +570,7 @@ export async function computeStatus(
   const nextAgileSlots = await resolveNextAgileSlots(env, jwt, todayRates, now);
   const yesterdayTotal = sumHourBucketsForLondonDate(hourBuckets, addDaysToDateKey(todayKey, -1));
   const predictedTodayCostGbp = predictTodayCostGbp(hourBuckets, accumulator.costGbpSoFar, now);
-  const predictedMonthCostGbp = predictMonthCostGbp(
-    monthAccumulator,
-    accumulator.costGbpSoFar,
-    predictedTodayCostGbp,
-    now,
-  );
+  const predictedMonthCostGbp = predictMonthCostGbp(monthAccumulator, now);
 
   const status: StatusResponse = {
     generatedAt: now.toISOString(),

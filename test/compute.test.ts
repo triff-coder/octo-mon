@@ -452,34 +452,81 @@ describe("predictTodayCostGbp", () => {
 
     expect(predictTodayCostGbp(state, 1.5, now)).toBeCloseTo(1.5);
   });
+
+  it("predicts the remainder of the current in-progress hour instead of skipping it entirely", () => {
+    // Checked just 5 minutes into the 10:00Z hour -- almost the whole hour
+    // is still to come, so omitting it (as if it had already finished)
+    // would badly undercount the prediction.
+    const now = new Date("2026-01-15T10:05:00Z");
+    const state: HourBucketsState = {
+      buckets: [
+        // This hour-of-day averaged 0.6 on the last two days.
+        { hourStart: "2026-01-14T10:00:00.000Z", kwhSoFar: 1, costGbpSoFar: 0.6 },
+        { hourStart: "2026-01-13T10:00:00.000Z", kwhSoFar: 1, costGbpSoFar: 0.6 },
+        // Only 0.1 has actually been drawn in the first 5 minutes of today's
+        // in-progress 10:00Z hour.
+        { hourStart: "2026-01-15T10:00:00.000Z", kwhSoFar: 0.2, costGbpSoFar: 0.1 },
+      ],
+      lastReadingAt: "2026-01-15T10:05:00Z",
+    };
+
+    const predicted = predictTodayCostGbp(state, 0.1, now);
+
+    // 0.1 (today so far) + (0.6 - 0.1) predicted remainder of this hour +
+    // 0 for every other remaining hour (no history for them).
+    expect(predicted).toBeCloseTo(0.1 + (0.6 - 0.1));
+  });
+
+  it("never predicts a negative remainder when the current hour has already exceeded its usual average", () => {
+    const now = new Date("2026-01-15T10:05:00Z");
+    const state: HourBucketsState = {
+      buckets: [
+        { hourStart: "2026-01-14T10:00:00.000Z", kwhSoFar: 1, costGbpSoFar: 0.2 },
+        // Already well past what this hour-of-day usually costs in total.
+        { hourStart: "2026-01-15T10:00:00.000Z", kwhSoFar: 5, costGbpSoFar: 3 },
+      ],
+      lastReadingAt: "2026-01-15T10:05:00Z",
+    };
+
+    expect(predictTodayCostGbp(state, 3, now)).toBeCloseTo(3);
+  });
 });
 
 describe("predictMonthCostGbp", () => {
-  it("extrapolates the average daily cost so far (including today) across the whole billing period", () => {
-    // January's billing period runs 2025-12-20..2026-01-19 inclusive (31 days).
-    const now = new Date("2026-01-05T12:00:00Z"); // day 17 of the period (Dec 20 .. Jan 5 inclusive)
+  it("extrapolates the average of complete prior days across the days still to come, using predictTodayCostGbp for today's own remainder", () => {
+    // The billing period runs 2025-12-20..2026-01-19 inclusive (31 days);
+    // "now" falls on day 17, i.e. 16 complete prior days (Dec 20 .. Jan 4).
+    const now = new Date("2026-01-05T12:00:00Z");
+    const todayCostSoFarGbp = 0.3;
     const monthAccumulator: MonthAccumulator = {
       periodKey: "2025-12-20",
       kwhSoFar: 34,
-      costGbpSoFar: 17, // avg 1/day over 17 elapsed days
+      costGbpSoFar: 16 * 1 + todayCostSoFarGbp, // 16 prior days averaging £1 + today's partial
       lastReadingAt: now.toISOString(),
     };
+    const predictedTodayCostGbp = 1.2; // today's own full-day prediction
 
-    const predicted = predictMonthCostGbp(monthAccumulator, now);
+    const predicted = predictMonthCostGbp(monthAccumulator, todayCostSoFarGbp, predictedTodayCostGbp, now);
 
-    expect(predicted).toBeCloseTo((17 / 17) * 31);
+    // 16 prior days @ £1 + today's predicted £1.2 + 14 remaining days
+    // (Jan 6 .. Jan 19) extrapolated at the same £1/day average.
+    expect(predicted).toBeCloseTo(16 * 1 + 1.2 + 14 * 1);
   });
 
-  it("extrapolates from a single elapsed day on the first day of a billing period", () => {
+  it("falls back to today's own predicted total extrapolated across the period on day one, with no prior complete day to average", () => {
     const now = new Date("2025-12-20T08:00:00Z"); // day 1 of a 31-day period
+    const todayCostSoFarGbp = 0.1;
     const monthAccumulator: MonthAccumulator = {
       periodKey: "2025-12-20",
-      kwhSoFar: 2,
-      costGbpSoFar: 0.5,
+      kwhSoFar: 0.2,
+      costGbpSoFar: todayCostSoFarGbp,
       lastReadingAt: now.toISOString(),
     };
+    const predictedTodayCostGbp = 0.9;
 
-    expect(predictMonthCostGbp(monthAccumulator, now)).toBeCloseTo((0.5 / 1) * 31);
+    const predicted = predictMonthCostGbp(monthAccumulator, todayCostSoFarGbp, predictedTodayCostGbp, now);
+
+    expect(predicted).toBeCloseTo(0.9 * 31);
   });
 });
 

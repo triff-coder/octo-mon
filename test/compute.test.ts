@@ -1375,6 +1375,40 @@ describe("computeStatus month backfill", () => {
     vi.unstubAllGlobals();
   });
 
+  it("surfaces a genuine (non-404) firstDataDateKey discovery failure in status.firstDataDateKeyError, leaving it unverified for retry", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:10:00Z", demand: 500, consumptionDelta: 1000 }],
+        pencePerKwh: 10,
+        consumptionFails: true, // 404s every request regardless of range, all the way down to the narrowest window -- a genuinely broken account, not a late-starting meter
+      }),
+    );
+
+    const previousMonth = {
+      periodKey: "2025-12-20",
+      kwhSoFar: 40,
+      costGbpSoFar: 4,
+      lastReadingAt: "2026-01-15T10:05:00Z",
+    } as MonthAccumulator; // simulates KV state predating firstDataDateKey
+
+    const { status, monthAccumulator } = await computeStatus(
+      testEnv,
+      null,
+      previousMonth,
+      null,
+      new Date("2026-01-15T10:11:00Z"),
+    );
+
+    // Running totals are untouched by the failed discovery attempt.
+    expect(status.thisMonthTotalKwh).toBeCloseTo(41);
+    expect(status.firstDataDateKeyVerified).toBe(false);
+    expect(status.firstDataDateKeyError).toContain("404");
+    expect(monthAccumulator.firstDataDateKeyVerified).toBe(false);
+
+    vi.unstubAllGlobals();
+  });
+
   it("skips the consumption endpoint when the billing period starts today (nothing to backfill)", async () => {
     const fetchMock = mockOctopusApi({
       telemetry: [{ readAt: "2026-01-20T10:00:00Z", demand: 500, consumptionDelta: 1000 }],
@@ -1432,6 +1466,9 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       thisMonthTotalCostGbp: 9,
       billingPeriodStart: "2025-12-20",
       monthBackfillError: null,
+      firstDataDateKey: "2025-12-20",
+      firstDataDateKeyVerified: true,
+      firstDataDateKeyError: null,
       lastHourCostGbp: 0.4,
       lastHourKwh: 2,
       hourlyBuckets: [],
@@ -1472,6 +1509,9 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       thisMonthTotalCostGbp: 9,
       billingPeriodStart: "2025-12-20",
       monthBackfillError: null,
+      firstDataDateKey: "2025-12-20",
+      firstDataDateKeyVerified: true,
+      firstDataDateKeyError: null,
       lastHourCostGbp: 0.4,
       lastHourKwh: 2,
       hourlyBuckets: [],
@@ -1529,6 +1569,9 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       thisMonthTotalCostGbp: 9,
       billingPeriodStart: "2025-12-20",
       monthBackfillError: null,
+      firstDataDateKey: "2025-12-20",
+      firstDataDateKeyVerified: true,
+      firstDataDateKeyError: null,
       lastHourCostGbp: 0.4,
       lastHourKwh: 2,
       hourlyBuckets: [],

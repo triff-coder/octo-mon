@@ -497,10 +497,23 @@ interface DiscoveredFirstDataDateKey {
  * Uses the same earliest-available narrowing as backfillMonthAccumulator (a
  * periodKey that predates the meter's first reading 404s outright
  * otherwise, which would otherwise silently look identical to "no gap at
- * all" and undo the whole point of this field). Best-effort: on any other
- * failure, or if the period started today, this returns periodKey
- * unverified, so the caller retries again on the next tick rather than
- * settling for a guess.
+ * all" and undo the whole point of this field).
+ *
+ * Two different failure outcomes, handled differently:
+ *  - The narrowing bottoms out at a 404 even at its narrowest window: this
+ *    means Octopus's REST consumption endpoint won't serve *anything* for
+ *    this account (seen in practice on an account whose meter/tariff was
+ *    only recently fixed, where the REST endpoint hadn't caught up even
+ *    though live telemetry works fine — the same scenario
+ *    computeDailyHistory already falls back for). There's no way to check
+ *    for a real gap via REST at all here, so this settles on periodKey as
+ *    the best available assumption and marks it *verified* — otherwise a
+ *    permanently-404ing endpoint would be re-queried on every single
+ *    request forever (every 30s from the dashboard) with no chance of ever
+ *    succeeding.
+ *  - Any other failure (network error, a non-404 status, ...) is treated as
+ *    transient: this returns periodKey *unverified*, so the caller retries
+ *    again on the next tick rather than settling for a guess.
  */
 async function discoverFirstDataDateKey(
   env: Env,
@@ -524,8 +537,14 @@ async function discoverFirstDataDateKey(
     return { firstDataDateKey: earliest, verified: true, error: null };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error("octo-mon firstDataDateKey discovery failed, leaving it unverified:", error);
-    return { firstDataDateKey: periodKey, verified: false, error: message };
+    const confirmedNoRestDataAtAll = error instanceof OctopusConsumptionError && error.status === 404;
+    console.error(
+      confirmedNoRestDataAtAll
+        ? "octo-mon firstDataDateKey: consumption endpoint serves nothing for this account, settling on periodKey:"
+        : "octo-mon firstDataDateKey discovery failed, leaving it unverified:",
+      error,
+    );
+    return { firstDataDateKey: periodKey, verified: confirmedNoRestDataAtAll, error: message };
   }
 }
 

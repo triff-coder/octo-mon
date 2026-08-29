@@ -1375,13 +1375,20 @@ describe("computeStatus month backfill", () => {
     vi.unstubAllGlobals();
   });
 
-  it("surfaces a genuine (non-404) firstDataDateKey discovery failure in status.firstDataDateKeyError, leaving it unverified for retry", async () => {
+  it("settles on periodKey as verified when the consumption endpoint serves nothing at all for the account (404 all the way down)", async () => {
+    // This is the actual production scenario: Octopus's REST consumption
+    // endpoint permanently 404s for this account/tariff regardless of the
+    // requested range, even at the narrowest possible window, while live
+    // telemetry works fine (same case computeDailyHistory already falls
+    // back for). There's no way to check for a real gap via REST here, so
+    // rather than retrying forever on every single request, this settles
+    // on periodKey (the best available assumption) and marks it verified.
     vi.stubGlobal(
       "fetch",
       mockOctopusApi({
         telemetry: [{ readAt: "2026-01-15T10:10:00Z", demand: 500, consumptionDelta: 1000 }],
         pencePerKwh: 10,
-        consumptionFails: true, // 404s every request regardless of range, all the way down to the narrowest window -- a genuinely broken account, not a late-starting meter
+        consumptionFails: true,
       }),
     );
 
@@ -1402,8 +1409,46 @@ describe("computeStatus month backfill", () => {
 
     // Running totals are untouched by the failed discovery attempt.
     expect(status.thisMonthTotalKwh).toBeCloseTo(41);
-    expect(status.firstDataDateKeyVerified).toBe(false);
+    expect(status.firstDataDateKey).toBe("2025-12-20");
+    expect(status.firstDataDateKeyVerified).toBe(true);
     expect(status.firstDataDateKeyError).toContain("404");
+    expect(monthAccumulator.firstDataDateKeyVerified).toBe(true);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("leaves firstDataDateKey unverified for retry on a genuinely transient (non-404) discovery failure", async () => {
+    const fetchMock = mockOctopusApi({
+      telemetry: [{ readAt: "2026-01-15T10:10:00Z", demand: 500, consumptionDelta: 1000 }],
+      pencePerKwh: 10,
+    });
+    const originalFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = input.toString();
+      if (url.includes("/consumption/")) {
+        return new Response("internal server error", { status: 500 });
+      }
+      return originalFetch(input, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const previousMonth = {
+      periodKey: "2025-12-20",
+      kwhSoFar: 40,
+      costGbpSoFar: 4,
+      lastReadingAt: "2026-01-15T10:05:00Z",
+    } as MonthAccumulator;
+
+    const { status, monthAccumulator } = await computeStatus(
+      testEnv,
+      null,
+      previousMonth,
+      null,
+      new Date("2026-01-15T10:11:00Z"),
+    );
+
+    expect(status.firstDataDateKeyVerified).toBe(false);
+    expect(status.firstDataDateKeyError).toContain("500");
     expect(monthAccumulator.firstDataDateKeyVerified).toBe(false);
 
     vi.unstubAllGlobals();

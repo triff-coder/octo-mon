@@ -133,14 +133,13 @@ export function advanceMonthAccumulator(
 
   const acc: MonthAccumulator =
     accumulator && isSameBillingPeriod(new Date(accumulator.lastReadingAt), now)
-      ? { ...accumulator }
+      ? { ...accumulator, dailyCostsGbp: { ...(accumulator.dailyCostsGbp ?? {}) } }
       : {
           periodKey,
           kwhSoFar: 0,
           costGbpSoFar: 0,
           lastReadingAt: new Date(0).toISOString(),
-          firstDataDateKey: londonDateKey(now),
-          firstDataDateKeyVerified: true,
+          dailyCostsGbp: {},
         };
 
   const lastAppliedMs = new Date(acc.lastReadingAt).getTime();
@@ -155,8 +154,13 @@ export function advanceMonthAccumulator(
     const rate = findRateForInstant(rates, pointDate);
 
     if (rate) {
+      const costGbp = (point.consumptionDeltaKwh * rate.pencePerKwh) / 100;
       acc.kwhSoFar += point.consumptionDeltaKwh;
-      acc.costGbpSoFar += (point.consumptionDeltaKwh * rate.pencePerKwh) / 100;
+      acc.costGbpSoFar += costGbp;
+      // Recorded per-day as well as in the running total, so
+      // predictMonthCostGbp can tell a day with no data from a £0 day
+      // without ever asking Octopus. See MonthAccumulator.dailyCostsGbp.
+      acc.dailyCostsGbp[dayKey] = (acc.dailyCostsGbp[dayKey] ?? 0) + costGbp;
     }
     acc.lastReadingAt = point.readAt;
   }
@@ -303,43 +307,66 @@ export function predictTodayCostGbp(hourBuckets: HourBucketsState, todayCostSoFa
 }
 
 /**
- * Predicts the current Octopus billing period's (see billingPeriodKey) total
- * cost for the *whole* period: the actual cost so far, plus the average
- * daily cost — computed only from the days actually behind that cost —
- * multiplied by every day the total doesn't yet cover, whether that gap is
- * behind or ahead of today.
+ * The days of this billing period whose recorded cost is trustworthy as a
+ * *whole day's* spend, oldest first — the basis for the daily average.
  *
- * "Average daily cost so far" is cost so far divided by the days elapsed
- * since `firstDataDateKey` (including today, counted as a whole day) —
- * *not* since the period technically started (`periodKey`). A brand-new or
- * only-recently-fixed meter can have Octopus report zero consumption for
- * the first few days of a period (nothing to do with actual usage — the
- * account just wasn't reporting yet), so averaging cost-so-far over the
- * full period span would count those as real £0 days and understate the
- * average.
- *
- * Those same leading days are real days of unmeasured usage, not days that
- * didn't happen — a whole-period estimate that just quietly omits them
- * would undercount the total by exactly the amount they likely cost. So
- * this fills them in at the same average rate as the days still left in
- * the period, rather than only projecting forward: the total multiplied by
- * the average is (days before firstDataDateKey) + (days left after today),
- * not days left alone.
+ * Excludes today (still in progress) and the earliest day with data, which
+ * is almost always partial: accumulation starts whenever the Worker/meter
+ * first reported, mid-afternoon as often as not, so counting it whole would
+ * drag the average down. On the rare occasion that first day really was
+ * complete, dropping one ordinary day from an average of its peers costs
+ * essentially nothing — the asymmetry is worth it.
  */
-export function predictMonthCostGbp(monthAccumulator: MonthAccumulator, now: Date): number {
+function completeDataDayKeys(monthAccumulator: MonthAccumulator, todayKey: string): string[] {
+  const daily = monthAccumulator.dailyCostsGbp ?? {};
+  return Object.keys(daily)
+    .filter((dateKey) => dateKey !== todayKey)
+    .sort()
+    .slice(1);
+}
+
+/**
+ * Predicts the current Octopus billing period's (see billingPeriodKey) total
+ * cost for the *whole* period, entirely from data this Worker already holds
+ * — no Octopus lookup involved.
+ *
+ * Takes the average of the days it has complete data for (see
+ * completeDataDayKeys), then fills in every other day of the period at that
+ * average: the days before the Worker started recording, the partial first
+ * day, and all the days still to come. Today gets `predictedTodayCostGbp`
+ * instead, which is finer-grained (built from per-hour averages) than a flat
+ * daily rate.
+ *
+ * The missing early days matter as much as the future ones: they're real
+ * days of unrecorded usage, not days that cost nothing, so leaving them out
+ * would undercount the period by roughly what they actually cost — and
+ * counting them as £0 days in the average would understate the rate on top
+ * of that.
+ *
+ * Falls back to extrapolating today's own prediction across the period when
+ * there's no complete day to average yet (the first day or two of a period).
+ */
+export function predictMonthCostGbp(
+  monthAccumulator: MonthAccumulator,
+  predictedTodayCostGbp: number,
+  now: Date,
+): number {
+  const todayKey = londonDateKey(now);
   const periodStart = londonMidnightUtc(monthAccumulator.periodKey);
   const periodEnd = nextBillingPeriodStartUtc(now);
-  const todayStart = londonMidnightUtc(londonDateKey(now));
-  const firstDataStart = londonMidnightUtc(monthAccumulator.firstDataDateKey ?? monthAccumulator.periodKey);
-
-  const daysElapsedSincePeriodStart = Math.round((todayStart.getTime() - periodStart.getTime()) / 86_400_000) + 1;
-  const daysWithData = Math.round((todayStart.getTime() - firstDataStart.getTime()) / 86_400_000) + 1;
   const totalDays = Math.round((periodEnd.getTime() - periodStart.getTime()) / 86_400_000);
-  const missingPastDays = Math.max(0, daysElapsedSincePeriodStart - daysWithData);
-  const daysLeft = Math.max(0, totalDays - daysElapsedSincePeriodStart);
 
-  const avgDailyCostSoFarGbp = monthAccumulator.costGbpSoFar / daysWithData;
-  return monthAccumulator.costGbpSoFar + avgDailyCostSoFarGbp * (missingPastDays + daysLeft);
+  const daily = monthAccumulator.dailyCostsGbp ?? {};
+  const completeDays = completeDataDayKeys(monthAccumulator, todayKey);
+  if (completeDays.length === 0) return predictedTodayCostGbp * totalDays;
+
+  const completeTotalGbp = completeDays.reduce((sum, dateKey) => sum + (daily[dateKey] ?? 0), 0);
+  const avgDailyCostGbp = completeTotalGbp / completeDays.length;
+  // Every day of the period that isn't one of the complete days and isn't
+  // today: the unrecorded/partial days behind us, plus the days ahead.
+  const daysToEstimate = Math.max(0, totalDays - completeDays.length - 1);
+
+  return completeTotalGbp + predictedTodayCostGbp + avgDailyCostGbp * daysToEstimate;
 }
 
 /**
@@ -431,8 +458,7 @@ async function backfillMonthAccumulator(env: Env, now: Date): Promise<MonthAccum
       kwhSoFar: 0,
       costGbpSoFar: 0,
       lastReadingAt: todayStart.toISOString(),
-      firstDataDateKey: todayKey,
-      firstDataDateKeyVerified: true,
+      dailyCostsGbp: {},
     };
   }
 
@@ -441,17 +467,11 @@ async function backfillMonthAccumulator(env: Env, now: Date): Promise<MonthAccum
 
   let kwhSoFar = 0;
   let costGbpSoFar = 0;
-  // The earliest day Octopus actually reported a consumption interval for
-  // in this period -- may be later than periodKey itself (a brand-new or
-  // only-recently-fixed meter can have no data at all for the period's
-  // first few days). Defaults to today if there's no historical data yet,
-  // so a day with no data isn't treated as an actual £0 day of usage.
-  let firstDataDateKey = todayKey;
+  const dailyCostsGbp: Record<string, number> = {};
 
   for (const interval of intervals) {
     const intervalStart = new Date(interval.intervalStart);
     const dayKey = londonDateKey(intervalStart);
-    if (dayKey < firstDataDateKey) firstDataDateKey = dayKey;
 
     let rates = ratesCache.get(dayKey);
     if (!rates) {
@@ -461,99 +481,75 @@ async function backfillMonthAccumulator(env: Env, now: Date): Promise<MonthAccum
 
     const rate = findRateForInstant(rates, intervalStart);
     if (rate) {
+      const costGbp = (interval.consumptionKwh * rate.pencePerKwh) / 100;
       kwhSoFar += interval.consumptionKwh;
-      costGbpSoFar += (interval.consumptionKwh * rate.pencePerKwh) / 100;
+      costGbpSoFar += costGbp;
+      dailyCostsGbp[dayKey] = (dailyCostsGbp[dayKey] ?? 0) + costGbp;
     }
   }
 
-  return {
-    periodKey,
-    kwhSoFar,
-    costGbpSoFar,
-    lastReadingAt: todayStart.toISOString(),
-    firstDataDateKey,
-    firstDataDateKeyVerified: true,
-  };
-}
-
-interface DiscoveredFirstDataDateKey {
-  firstDataDateKey: string;
-  /** False on the best-effort failure fallback, so the caller retries on the next tick instead of treating a guess as settled. */
-  verified: boolean;
-  /** Set when discovery failed, so the cause is visible in /status rather than only in logs (mirrors monthBackfillError). */
-  error: string | null;
+  return { periodKey, kwhSoFar, costGbpSoFar, lastReadingAt: todayStart.toISOString(), dailyCostsGbp };
 }
 
 /**
- * One-time migration for a MonthAccumulator persisted in KV before
- * `firstDataDateKey` existed (i.e. missing it at runtime despite the type
- * now requiring it), or one carrying an unverified value from an earlier,
- * buggy version of this same migration (see firstDataDateKeyVerified):
- * determines the earliest day Octopus actually has consumption data for in
- * this period via a cheap REST lookup (no rate lookups needed — only the
- * date matters here), so predictMonthCostGbp can start averaging from the
- * right day immediately rather than waiting for the next billing-period
- * rollover to naturally repopulate it through backfillMonthAccumulator.
- * Uses the same earliest-available narrowing as backfillMonthAccumulator (a
- * periodKey that predates the meter's first reading 404s outright
- * otherwise, which would otherwise silently look identical to "no gap at
- * all" and undo the whole point of this field).
+ * Rebuilds `dailyCostsGbp` for an accumulator persisted before that field
+ * existed, from the rolling hour buckets this Worker already keeps — no
+ * Octopus lookup, which matters because the REST consumption endpoint is
+ * exactly what's unavailable on the accounts this field exists to serve.
  *
- * Two different failure outcomes, handled differently:
- *  - The narrowing bottoms out at a 404 even at its narrowest window: this
- *    means Octopus's REST consumption endpoint won't serve *anything* for
- *    this account (seen in practice on an account whose meter/tariff was
- *    only recently fixed, where the REST endpoint hadn't caught up even
- *    though live telemetry works fine — the same scenario
- *    computeDailyHistory already falls back for). There's no way to check
- *    for a real gap via REST at all here, so this settles on periodKey as
- *    the best available assumption and marks it *verified* — otherwise a
- *    permanently-404ing endpoint would be re-queried on every single
- *    request forever (every 30s from the dashboard) with no chance of ever
- *    succeeding.
- *  - Any other failure (network error, a non-404 status, ...) is treated as
- *    transient: this returns periodKey *unverified*, so the caller retries
- *    again on the next tick rather than settling for a guess.
+ * Hour buckets only reach back HOUR_BUCKET_RETENTION_HOURS (~8 days), so on
+ * a period already older than that they can't see its earliest days. Any
+ * cost the buckets can't account for is therefore known to belong to days
+ * before the oldest bucket, and is spread evenly across them — preserving
+ * both the true total and the fact that those days had data, rather than
+ * leaving them looking like days the Worker never recorded.
  */
-async function discoverFirstDataDateKey(
-  env: Env,
-  periodKey: string,
-  now: Date,
-): Promise<DiscoveredFirstDataDateKey> {
-  const todayKey = londonDateKey(now);
-  const periodStart = londonMidnightUtc(periodKey);
-  const todayStart = londonMidnightUtc(todayKey);
-  if (periodStart.getTime() >= todayStart.getTime()) {
-    return { firstDataDateKey: todayKey, verified: true, error: null };
+function rebuildDailyCostsFromHourBuckets(
+  accumulator: MonthAccumulator,
+  hourBuckets: HourBucketsState | null,
+): Record<string, number> {
+  const periodStart = londonMidnightUtc(accumulator.periodKey);
+  const dailyCostsGbp: Record<string, number> = {};
+
+  for (const bucket of hourBuckets?.buckets ?? []) {
+    const bucketStart = new Date(bucket.hourStart);
+    if (bucketStart.getTime() < periodStart.getTime()) continue;
+    const dayKey = londonDateKey(bucketStart);
+    dailyCostsGbp[dayKey] = (dailyCostsGbp[dayKey] ?? 0) + bucket.costGbpSoFar;
   }
 
-  try {
-    const intervals = await fetchHistoricalConsumptionFromEarliestAvailable(env, periodStart, todayStart);
-    let earliest = todayKey;
-    for (const interval of intervals) {
-      const dayKey = londonDateKey(new Date(interval.intervalStart));
-      if (dayKey < earliest) earliest = dayKey;
-    }
-    return { firstDataDateKey: earliest, verified: true, error: null };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const confirmedNoRestDataAtAll = error instanceof OctopusConsumptionError && error.status === 404;
-    console.error(
-      confirmedNoRestDataAtAll
-        ? "octo-mon firstDataDateKey: consumption endpoint serves nothing for this account, settling on periodKey:"
-        : "octo-mon firstDataDateKey discovery failed, leaving it unverified:",
-      error,
-    );
-    return { firstDataDateKey: periodKey, verified: confirmedNoRestDataAtAll, error: message };
+  const dayKeys = Object.keys(dailyCostsGbp).sort();
+  if (dayKeys.length === 0) {
+    // Nothing to go on: treat the period as having data throughout, which
+    // is what the pre-dailyCostsGbp behavior effectively assumed.
+    return { [accumulator.periodKey]: accumulator.costGbpSoFar };
   }
+
+  const reconstructedTotal = dayKeys.reduce((sum, k) => sum + dailyCostsGbp[k]!, 0);
+  const unaccountedGbp = accumulator.costGbpSoFar - reconstructedTotal;
+  const earliestKey = dayKeys[0]!;
+  const daysBeforeBuckets = Math.round(
+    (londonMidnightUtc(earliestKey).getTime() - periodStart.getTime()) / 86_400_000,
+  );
+  // Only worth spreading if it amounts to real usage rather than drift
+  // between two totals accumulated slightly differently — otherwise a few
+  // pence of noise would invent a data day for every day of the period.
+  const materialGbp = reconstructedTotal / dayKeys.length / 2;
+
+  if (unaccountedGbp > materialGbp && daysBeforeBuckets > 0) {
+    const perDayGbp = unaccountedGbp / daysBeforeBuckets;
+    for (let i = 0; i < daysBeforeBuckets; i++) {
+      dailyCostsGbp[addDaysToDateKey(accumulator.periodKey, i)] = perDayGbp;
+    }
+  }
+
+  return dailyCostsGbp;
 }
 
 interface ResolvedMonthAccumulator {
   accumulator: MonthAccumulator;
   /** Set when backfill was attempted and failed, so the cause is visible in /status rather than only in logs. */
   backfillError: string | null;
-  /** Set when the firstDataDateKey migration/re-verification was attempted and failed, for the same reason as backfillError. */
-  firstDataDateKeyError: string | null;
 }
 
 /**
@@ -572,29 +568,24 @@ interface ResolvedMonthAccumulator {
 async function resolveMonthAccumulator(
   env: Env,
   previousMonthAccumulator: MonthAccumulator | null,
+  previousHourBuckets: HourBucketsState | null,
   now: Date,
 ): Promise<ResolvedMonthAccumulator> {
   if (
     previousMonthAccumulator &&
     isSameBillingPeriod(new Date(previousMonthAccumulator.lastReadingAt), now)
   ) {
-    if (previousMonthAccumulator.firstDataDateKey && previousMonthAccumulator.firstDataDateKeyVerified) {
-      return { accumulator: previousMonthAccumulator, backfillError: null, firstDataDateKeyError: null };
-    }
-    const { firstDataDateKey, verified, error } = await discoverFirstDataDateKey(
-      env,
-      previousMonthAccumulator.periodKey,
-      now,
-    );
-    return {
-      accumulator: { ...previousMonthAccumulator, firstDataDateKey, firstDataDateKeyVerified: verified },
-      backfillError: null,
-      firstDataDateKeyError: error,
-    };
+    const accumulator = previousMonthAccumulator.dailyCostsGbp
+      ? previousMonthAccumulator
+      : {
+          ...previousMonthAccumulator,
+          dailyCostsGbp: rebuildDailyCostsFromHourBuckets(previousMonthAccumulator, previousHourBuckets),
+        };
+    return { accumulator, backfillError: null };
   }
   try {
     const accumulator = await backfillMonthAccumulator(env, now);
-    return { accumulator, backfillError: null, firstDataDateKeyError: null };
+    return { accumulator, backfillError: null };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("octo-mon month backfill failed, starting this month's total from zero:", error);
@@ -604,11 +595,9 @@ async function resolveMonthAccumulator(
         kwhSoFar: 0,
         costGbpSoFar: 0,
         lastReadingAt: londonMidnightUtc(londonDateKey(now)).toISOString(),
-        firstDataDateKey: londonDateKey(now),
-        firstDataDateKeyVerified: true,
+        dailyCostsGbp: {},
       },
       backfillError: message,
-      firstDataDateKeyError: null,
     };
   }
 }
@@ -690,11 +679,12 @@ export async function computeStatus(
   const todayRates = await fetchUnitRatesForDay(env, todayKey);
   const ratesByDay = new Map<string, UnitRate[]>([[todayKey, todayRates]]);
 
-  const {
-    accumulator: resolvedMonthAccumulator,
-    backfillError,
-    firstDataDateKeyError,
-  } = await resolveMonthAccumulator(env, previousMonthAccumulator, now);
+  const { accumulator: resolvedMonthAccumulator, backfillError } = await resolveMonthAccumulator(
+    env,
+    previousMonthAccumulator,
+    previousHourBuckets,
+    now,
+  );
 
   // The accumulator resets for a new day (see advanceTodayAccumulator), so
   // whenever it's reused it's always from earlier today; fetchSince is
@@ -753,7 +743,9 @@ export async function computeStatus(
   const nextAgileSlots = await resolveNextAgileSlots(env, jwt, todayRates, now);
   const yesterdayTotal = sumHourBucketsForLondonDate(hourBuckets, addDaysToDateKey(todayKey, -1));
   const predictedTodayCostGbp = predictTodayCostGbp(hourBuckets, accumulator.costGbpSoFar, now);
-  const predictedMonthCostGbp = predictMonthCostGbp(monthAccumulator, now);
+  const predictedMonthCostGbp = predictMonthCostGbp(monthAccumulator, predictedTodayCostGbp, now);
+  const completeDataDays = completeDataDayKeys(monthAccumulator, todayKey);
+  const recordedDayKeys = Object.keys(monthAccumulator.dailyCostsGbp ?? {}).sort();
 
   const status: StatusResponse = {
     generatedAt: now.toISOString(),
@@ -768,9 +760,8 @@ export async function computeStatus(
     thisMonthTotalCostGbp: monthAccumulator.costGbpSoFar,
     billingPeriodStart: monthAccumulator.periodKey,
     monthBackfillError: backfillError,
-    firstDataDateKey: monthAccumulator.firstDataDateKey,
-    firstDataDateKeyVerified: monthAccumulator.firstDataDateKeyVerified,
-    firstDataDateKeyError,
+    firstDataDateKey: recordedDayKeys[0] ?? todayKey,
+    completeDataDayCount: completeDataDays.length,
     lastHourCostGbp,
     lastHourKwh,
     hourlyBuckets,

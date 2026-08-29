@@ -284,11 +284,17 @@ export function renderDashboardHtml(token: string): string {
     if (!buckets || buckets.length === 0) return;
 
     var labelHeight = 40;
-    var chartHeight = height - labelHeight;
+    // Headroom above the bars for the peak hour's cost label, so the
+    // tallest bar never has to fight the top edge of the canvas for it.
+    var peakLabelHeight = 34;
+    var baselineY = height - labelHeight;
+    var chartHeight = baselineY - peakLabelHeight;
 
     var maxCost = 0.01;
+    var peakIndex = 0;
     for (var i = 0; i < buckets.length; i++) {
       maxCost = Math.max(maxCost, buckets[i].costGbp || 0, buckets[i].weeklyAvgCostGbp || 0);
+      if ((buckets[i].costGbp || 0) > (buckets[peakIndex].costGbp || 0)) peakIndex = i;
     }
 
     var gap = Math.max(2, width / buckets.length / 8);
@@ -304,19 +310,36 @@ export function renderDashboardHtml(token: string): string {
       var x = j * (barWidth + gap);
       var barHeight = Math.max(3, (bucket.costGbp / maxCost) * chartHeight);
       ctx.fillStyle = isOvernightHour(bucket.hourStart) ? "#8FD8FA" : "#4FC3F7";
-      ctx.fillRect(x, chartHeight - barHeight, barWidth, barHeight);
+      ctx.fillRect(x, baselineY - barHeight, barWidth, barHeight);
 
       if (bucket.weeklyAvgCostGbp > 0) {
-        var markCenterY = chartHeight - (bucket.weeklyAvgCostGbp / maxCost) * chartHeight;
-        var markY = Math.min(chartHeight - markHeight, Math.max(0, markCenterY - markHeight / 2));
+        var markCenterY = baselineY - (bucket.weeklyAvgCostGbp / maxCost) * chartHeight;
+        var markY = Math.min(baselineY - markHeight, Math.max(0, markCenterY - markHeight / 2));
         ctx.fillStyle = "rgba(255,255,255,0.9)";
         ctx.fillRect(x, markY, barWidth, markHeight);
       }
 
       if (j % HOUR_LABEL_INTERVAL === 0) {
         ctx.fillStyle = "#9aa0a8";
-        ctx.fillText(formatHourLabel(bucket.hourStart), x + barWidth / 2, chartHeight + 6);
+        ctx.fillText(formatHourLabel(bucket.hourStart), x + barWidth / 2, baselineY + 6);
       }
+    }
+
+    // The priciest hour of the 24, called out with its actual cost -- the
+    // bars alone show the shape but leave the scale to guesswork. Drawn
+    // after the loop so it sits over any neighbouring bar it overhangs.
+    var peakCost = buckets[peakIndex].costGbp || 0;
+    if (peakCost > 0) {
+      var peakLabel = formatPounds(peakCost);
+      var peakBarHeight = Math.max(3, (peakCost / maxCost) * chartHeight);
+      ctx.font = "bold 26px -apple-system, BlinkMacSystemFont, sans-serif";
+      ctx.textBaseline = "bottom";
+      // Keep the label inside the canvas when the peak is the first or last bar.
+      var halfLabelWidth = ctx.measureText(peakLabel).width / 2;
+      var peakCenterX = peakIndex * (barWidth + gap) + barWidth / 2;
+      var peakLabelX = Math.min(width - halfLabelWidth, Math.max(halfLabelWidth, peakCenterX));
+      ctx.fillStyle = "#fff";
+      ctx.fillText(peakLabel, peakLabelX, baselineY - peakBarHeight - 8);
     }
   }
 

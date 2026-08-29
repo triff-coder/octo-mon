@@ -69,6 +69,17 @@ export interface MonthAccumulator {
    * here instead.
    */
   firstDataDateKey: string;
+  /**
+   * Whether firstDataDateKey was determined by the current
+   * earliest-available-narrowing logic (fetchHistoricalConsumptionFromEarliestAvailable),
+   * as opposed to an earlier, buggy migration that could silently fall back
+   * to periodKey on a 404 without ever discovering a real gap. Lets
+   * resolveMonthAccumulator re-run its one-time migration for an
+   * accumulator carrying that stale, unverified value (distinguishable
+   * from "verified, no gap" only by actually re-checking), without
+   * re-querying the REST endpoint on every request once verified.
+   */
+  firstDataDateKeyVerified: boolean;
 }
 
 /** Running totals for a single UTC clock hour, part of HourBucketsState. */

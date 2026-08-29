@@ -140,6 +140,7 @@ export function advanceMonthAccumulator(
           costGbpSoFar: 0,
           lastReadingAt: new Date(0).toISOString(),
           firstDataDateKey: londonDateKey(now),
+          firstDataDateKeyVerified: true,
         };
 
   const lastAppliedMs = new Date(acc.lastReadingAt).getTime();
@@ -431,6 +432,7 @@ async function backfillMonthAccumulator(env: Env, now: Date): Promise<MonthAccum
       costGbpSoFar: 0,
       lastReadingAt: todayStart.toISOString(),
       firstDataDateKey: todayKey,
+      firstDataDateKeyVerified: true,
     };
   }
 
@@ -464,30 +466,49 @@ async function backfillMonthAccumulator(env: Env, now: Date): Promise<MonthAccum
     }
   }
 
-  return { periodKey, kwhSoFar, costGbpSoFar, lastReadingAt: todayStart.toISOString(), firstDataDateKey };
+  return {
+    periodKey,
+    kwhSoFar,
+    costGbpSoFar,
+    lastReadingAt: todayStart.toISOString(),
+    firstDataDateKey,
+    firstDataDateKeyVerified: true,
+  };
+}
+
+interface DiscoveredFirstDataDateKey {
+  firstDataDateKey: string;
+  /** False on the best-effort failure fallback, so the caller retries on the next tick instead of treating a guess as settled. */
+  verified: boolean;
 }
 
 /**
  * One-time migration for a MonthAccumulator persisted in KV before
  * `firstDataDateKey` existed (i.e. missing it at runtime despite the type
- * now requiring it): determines the earliest day Octopus actually has
- * consumption data for in this period via a cheap REST lookup (no rate
- * lookups needed — only the date matters here), so predictMonthCostGbp can
- * start averaging from the right day immediately rather than waiting for
- * the next billing-period rollover to naturally repopulate it through
- * backfillMonthAccumulator. Uses the same earliest-available narrowing as
- * backfillMonthAccumulator (a periodKey that predates the meter's first
- * reading 404s outright otherwise, which would otherwise silently look
- * identical to "no gap at all" and undo the whole point of this field).
- * Best-effort: on any other failure, or if the period started today, this
- * just returns periodKey (the pre-fix behavior) unchanged — the caller
- * will retry on the next tick.
+ * now requiring it), or one carrying an unverified value from an earlier,
+ * buggy version of this same migration (see firstDataDateKeyVerified):
+ * determines the earliest day Octopus actually has consumption data for in
+ * this period via a cheap REST lookup (no rate lookups needed — only the
+ * date matters here), so predictMonthCostGbp can start averaging from the
+ * right day immediately rather than waiting for the next billing-period
+ * rollover to naturally repopulate it through backfillMonthAccumulator.
+ * Uses the same earliest-available narrowing as backfillMonthAccumulator (a
+ * periodKey that predates the meter's first reading 404s outright
+ * otherwise, which would otherwise silently look identical to "no gap at
+ * all" and undo the whole point of this field). Best-effort: on any other
+ * failure, or if the period started today, this returns periodKey
+ * unverified, so the caller retries again on the next tick rather than
+ * settling for a guess.
  */
-async function discoverFirstDataDateKey(env: Env, periodKey: string, now: Date): Promise<string> {
+async function discoverFirstDataDateKey(
+  env: Env,
+  periodKey: string,
+  now: Date,
+): Promise<DiscoveredFirstDataDateKey> {
   const todayKey = londonDateKey(now);
   const periodStart = londonMidnightUtc(periodKey);
   const todayStart = londonMidnightUtc(todayKey);
-  if (periodStart.getTime() >= todayStart.getTime()) return todayKey;
+  if (periodStart.getTime() >= todayStart.getTime()) return { firstDataDateKey: todayKey, verified: true };
 
   try {
     const intervals = await fetchHistoricalConsumptionFromEarliestAvailable(env, periodStart, todayStart);
@@ -496,9 +517,9 @@ async function discoverFirstDataDateKey(env: Env, periodKey: string, now: Date):
       const dayKey = londonDateKey(new Date(interval.intervalStart));
       if (dayKey < earliest) earliest = dayKey;
     }
-    return earliest;
+    return { firstDataDateKey: earliest, verified: true };
   } catch {
-    return periodKey;
+    return { firstDataDateKey: periodKey, verified: false };
   }
 }
 
@@ -530,11 +551,18 @@ async function resolveMonthAccumulator(
     previousMonthAccumulator &&
     isSameBillingPeriod(new Date(previousMonthAccumulator.lastReadingAt), now)
   ) {
-    if (previousMonthAccumulator.firstDataDateKey) {
+    if (previousMonthAccumulator.firstDataDateKey && previousMonthAccumulator.firstDataDateKeyVerified) {
       return { accumulator: previousMonthAccumulator, backfillError: null };
     }
-    const firstDataDateKey = await discoverFirstDataDateKey(env, previousMonthAccumulator.periodKey, now);
-    return { accumulator: { ...previousMonthAccumulator, firstDataDateKey }, backfillError: null };
+    const { firstDataDateKey, verified } = await discoverFirstDataDateKey(
+      env,
+      previousMonthAccumulator.periodKey,
+      now,
+    );
+    return {
+      accumulator: { ...previousMonthAccumulator, firstDataDateKey, firstDataDateKeyVerified: verified },
+      backfillError: null,
+    };
   }
   try {
     const accumulator = await backfillMonthAccumulator(env, now);
@@ -549,6 +577,7 @@ async function resolveMonthAccumulator(
         costGbpSoFar: 0,
         lastReadingAt: londonMidnightUtc(londonDateKey(now)).toISOString(),
         firstDataDateKey: londonDateKey(now),
+        firstDataDateKeyVerified: true,
       },
       backfillError: message,
     };

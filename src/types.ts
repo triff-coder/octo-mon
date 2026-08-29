@@ -58,28 +58,20 @@ export interface MonthAccumulator {
   costGbpSoFar: number;
   lastReadingAt: string;
   /**
-   * Europe/London calendar date of the earliest day in this billing period
-   * that actually has recorded consumption data, as determined once at
-   * backfill time (or "today" if the period started today, or backfill
-   * found nothing). A brand-new account/meter, or one only recently fixed,
-   * can have Octopus report no consumption at all for the first few days of
-   * a period (e.g. before it was fully provisioned) — averaging cost so far
-   * over the full calendar span since periodKey would count those as £0
-   * days and understate the average, so predictMonthCostGbp averages from
-   * here instead.
+   * Cost recorded against each Europe/London calendar date in this billing
+   * period that has any data at all, keyed YYYY-MM-DD. Maintained purely
+   * from what this Worker has actually accumulated — never re-derived from
+   * Octopus — so it stays accurate for the whole period even when the REST
+   * consumption endpoint is unavailable, and long after the ~8-day hour
+   * buckets have aged out.
+   *
+   * Days missing from this map are days the Worker genuinely has no data
+   * for (e.g. it wasn't running yet, or the meter hadn't been provisioned),
+   * as opposed to days that cost £0 — which is exactly what
+   * predictMonthCostGbp needs in order to fill them in at the average rate
+   * rather than silently counting them as free.
    */
-  firstDataDateKey: string;
-  /**
-   * Whether firstDataDateKey was determined by the current
-   * earliest-available-narrowing logic (fetchHistoricalConsumptionFromEarliestAvailable),
-   * as opposed to an earlier, buggy migration that could silently fall back
-   * to periodKey on a 404 without ever discovering a real gap. Lets
-   * resolveMonthAccumulator re-run its one-time migration for an
-   * accumulator carrying that stale, unverified value (distinguishable
-   * from "verified, no gap" only by actually re-checking), without
-   * re-querying the REST endpoint on every request once verified.
-   */
-  firstDataDateKeyVerified: boolean;
+  dailyCostsGbp: Record<string, number>;
 }
 
 /** Running totals for a single UTC clock hour, part of HourBucketsState. */
@@ -127,12 +119,10 @@ export interface StatusResponse {
   billingPeriodStart: string;
   /** Set when the month backfill was attempted and failed (falling back to a zero-balance start), null otherwise. */
   monthBackfillError: string | null;
-  /** Europe/London date of the earliest day this billing period actually has consumption data for — see MonthAccumulator.firstDataDateKey. Used by predictMonthCostGbp. */
+  /** Europe/London date of the earliest day this billing period has any recorded data for, derived from MonthAccumulator.dailyCostsGbp. Days before it are estimated at the daily average — see predictMonthCostGbp. */
   firstDataDateKey: string;
-  /** Whether firstDataDateKey came from a real, successful lookup this period, or is still an unverified guess pending retry — see MonthAccumulator.firstDataDateKeyVerified. */
-  firstDataDateKeyVerified: boolean;
-  /** Set when the most recent firstDataDateKey discovery/re-verification attempt failed, null otherwise (mirrors monthBackfillError). */
-  firstDataDateKeyError: string | null;
+  /** How many days of this billing period have complete recorded data behind predictedMonthCostGbp's daily average (excludes today and the first, usually partial, day). */
+  completeDataDayCount: number;
   /** Cost of the most recently completed UTC clock hour (not the current in-progress one). */
   lastHourCostGbp: number;
   /** kWh consumed in that same most recently completed UTC clock hour. */

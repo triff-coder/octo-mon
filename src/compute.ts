@@ -303,18 +303,27 @@ export function predictTodayCostGbp(hourBuckets: HourBucketsState, todayCostSoFa
 
 /**
  * Predicts the current Octopus billing period's (see billingPeriodKey) total
- * cost: the actual cost so far, plus the average daily cost so far this
- * period multiplied by the days still left in the period.
+ * cost for the *whole* period: the actual cost so far, plus the average
+ * daily cost — computed only from the days actually behind that cost —
+ * multiplied by every day the total doesn't yet cover, whether that gap is
+ * behind or ahead of today.
  *
  * "Average daily cost so far" is cost so far divided by the days elapsed
  * since `firstDataDateKey` (including today, counted as a whole day) —
  * *not* since the period technically started (`periodKey`). A brand-new or
  * only-recently-fixed meter can have Octopus report zero consumption for
  * the first few days of a period (nothing to do with actual usage — the
- * account just wasn't reporting yet); averaging over the full period span
- * would count those as real £0 days and understate the average. Days left
- * in the period is still measured from the true period end, though — a
- * late-starting meter doesn't shorten the period itself.
+ * account just wasn't reporting yet), so averaging cost-so-far over the
+ * full period span would count those as real £0 days and understate the
+ * average.
+ *
+ * Those same leading days are real days of unmeasured usage, not days that
+ * didn't happen — a whole-period estimate that just quietly omits them
+ * would undercount the total by exactly the amount they likely cost. So
+ * this fills them in at the same average rate as the days still left in
+ * the period, rather than only projecting forward: the total multiplied by
+ * the average is (days before firstDataDateKey) + (days left after today),
+ * not days left alone.
  */
 export function predictMonthCostGbp(monthAccumulator: MonthAccumulator, now: Date): number {
   const periodStart = londonMidnightUtc(monthAccumulator.periodKey);
@@ -325,10 +334,11 @@ export function predictMonthCostGbp(monthAccumulator: MonthAccumulator, now: Dat
   const daysElapsedSincePeriodStart = Math.round((todayStart.getTime() - periodStart.getTime()) / 86_400_000) + 1;
   const daysWithData = Math.round((todayStart.getTime() - firstDataStart.getTime()) / 86_400_000) + 1;
   const totalDays = Math.round((periodEnd.getTime() - periodStart.getTime()) / 86_400_000);
+  const missingPastDays = Math.max(0, daysElapsedSincePeriodStart - daysWithData);
   const daysLeft = Math.max(0, totalDays - daysElapsedSincePeriodStart);
 
   const avgDailyCostSoFarGbp = monthAccumulator.costGbpSoFar / daysWithData;
-  return monthAccumulator.costGbpSoFar + avgDailyCostSoFarGbp * daysLeft;
+  return monthAccumulator.costGbpSoFar + avgDailyCostSoFarGbp * (missingPastDays + daysLeft);
 }
 
 /**
@@ -350,6 +360,52 @@ function sumHourBucketsForLondonDate(
     }
   }
   return { kwhSoFar, costGbpSoFar };
+}
+
+/**
+ * Fetches consumption for [start, end) the same as fetchHistoricalConsumption,
+ * but tolerates `start` predating the meter's earliest actual reading:
+ * Octopus 404s the *entire* request in that case rather than returning
+ * partial results for the days it does have (same characteristic
+ * fetchHistoricalConsumptionNarrowing already works around for /history,
+ * generalized here to bisect for the earliest working start date instead of
+ * shrinking a fixed lookback window). Binary-searches forward from `start`
+ * toward `end` on a 404, so an account/meter that only started reporting
+ * partway through the requested range still gets the real data it has,
+ * instead of the whole range failing outright.
+ *
+ * A 404 that persists all the way down to the narrowest possible window
+ * (starting the day before `end`) isn't a late-starting meter — something
+ * else is wrong (bad MPAN/serial, Octopus outage, ...) — so that case is
+ * left to throw/propagate rather than silently treated as "no data".
+ */
+async function fetchHistoricalConsumptionFromEarliestAvailable(
+  env: Env,
+  start: Date,
+  end: Date,
+): Promise<ConsumptionInterval[]> {
+  try {
+    return await fetchHistoricalConsumption(env, start, end);
+  } catch (error) {
+    if (!(error instanceof OctopusConsumptionError) || error.status !== 404) throw error;
+  }
+
+  let loMs = start.getTime(); // known to 404 (or not yet tried below this point)
+  let hiMs = end.getTime(); // known to succeed (trivially -- an empty range never 404s)
+  let lastGood: ConsumptionInterval[] | null = null;
+
+  while (hiMs - loMs > 86_400_000) {
+    const midMs = loMs + Math.floor((hiMs - loMs) / 2 / 86_400_000) * 86_400_000;
+    try {
+      lastGood = await fetchHistoricalConsumption(env, new Date(midMs), end);
+      hiMs = midMs;
+    } catch (error) {
+      if (!(error instanceof OctopusConsumptionError) || error.status !== 404) throw error;
+      loMs = midMs;
+    }
+  }
+
+  return lastGood ?? fetchHistoricalConsumption(env, new Date(hiMs), end);
 }
 
 /**
@@ -378,7 +434,7 @@ async function backfillMonthAccumulator(env: Env, now: Date): Promise<MonthAccum
     };
   }
 
-  const intervals = await fetchHistoricalConsumption(env, periodStart, todayStart);
+  const intervals = await fetchHistoricalConsumptionFromEarliestAvailable(env, periodStart, todayStart);
   const ratesCache = new Map<string, UnitRate[]>();
 
   let kwhSoFar = 0;
@@ -419,9 +475,13 @@ async function backfillMonthAccumulator(env: Env, now: Date): Promise<MonthAccum
  * lookups needed — only the date matters here), so predictMonthCostGbp can
  * start averaging from the right day immediately rather than waiting for
  * the next billing-period rollover to naturally repopulate it through
- * backfillMonthAccumulator. Best-effort: on any failure, or if the period
- * started today, this just returns periodKey (the pre-fix behavior)
- * unchanged — the caller will retry on the next tick.
+ * backfillMonthAccumulator. Uses the same earliest-available narrowing as
+ * backfillMonthAccumulator (a periodKey that predates the meter's first
+ * reading 404s outright otherwise, which would otherwise silently look
+ * identical to "no gap at all" and undo the whole point of this field).
+ * Best-effort: on any other failure, or if the period started today, this
+ * just returns periodKey (the pre-fix behavior) unchanged — the caller
+ * will retry on the next tick.
  */
 async function discoverFirstDataDateKey(env: Env, periodKey: string, now: Date): Promise<string> {
   const todayKey = londonDateKey(now);
@@ -430,7 +490,7 @@ async function discoverFirstDataDateKey(env: Env, periodKey: string, now: Date):
   if (periodStart.getTime() >= todayStart.getTime()) return todayKey;
 
   try {
-    const intervals = await fetchHistoricalConsumption(env, periodStart, todayStart);
+    const intervals = await fetchHistoricalConsumptionFromEarliestAvailable(env, periodStart, todayStart);
     let earliest = todayKey;
     for (const interval of intervals) {
       const dayKey = londonDateKey(new Date(interval.intervalStart));

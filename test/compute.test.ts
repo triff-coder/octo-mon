@@ -528,11 +528,12 @@ describe("predictMonthCostGbp", () => {
     expect(predictMonthCostGbp(monthAccumulator, now)).toBeCloseTo(0.5 * 31);
   });
 
-  it("averages from firstDataDateKey rather than periodKey, when the meter has no data for the period's first few days", () => {
+  it("fills in the missing early days at the average rate too, not just the days still to come", () => {
     // Billing period starts 2025-12-20, but the meter only started
     // reporting data on the 23rd (e.g. a newly fixed account) -- "now" is
-    // the 29th, so there are 7 days with data (23rd..29th inclusive) and
-    // 10 calendar days elapsed since the period technically started.
+    // the 29th, so there are 7 days with data (23rd..29th inclusive), 10
+    // calendar days elapsed since the period technically started (so 3
+    // "missing" days: the 20th, 21st, 22nd), and 21 days left after today.
     const now = new Date("2025-12-29T12:00:00Z");
     const monthAccumulator: MonthAccumulator = {
       periodKey: "2025-12-20",
@@ -544,9 +545,11 @@ describe("predictMonthCostGbp", () => {
 
     const predicted = predictMonthCostGbp(monthAccumulator, now);
 
-    // Days left is still measured from the true period start (10 elapsed
-    // of 31 -> 21 left), but the average daily cost is 45.5 / 7, not 45.5 / 10.
-    expect(predicted).toBeCloseTo(45.5 + (45.5 / 7) * 21);
+    // The average daily cost (45.5 / 7) is applied to both the 3 missing
+    // early days AND the 21 days still to come -- not days left alone --
+    // so the 20th-22nd's real but unmeasured usage isn't silently dropped
+    // from the whole-period estimate.
+    expect(predicted).toBeCloseTo(45.5 + (45.5 / 7) * (3 + 21));
   });
 
   it("falls back to periodKey when firstDataDateKey is missing from an already-persisted accumulator", () => {
@@ -1030,6 +1033,142 @@ describe("computeStatus month backfill", () => {
     );
 
     expect(monthAccumulator.periodKey).toBe("2025-12-20");
+    expect(monthAccumulator.firstDataDateKey).toBe("2025-12-23");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("narrows forward on a cold-start backfill when periodKey predates the meter's earliest reading", async () => {
+    // Real Octopus behavior (unlike the flat mockOctopusApi consumption
+    // option above): a period_from before the meter's first reading 404s
+    // the *entire* request rather than serving the days it does have. The
+    // billing period starts 2025-12-20, but this meter's data only starts
+    // 2025-12-23 -- a naive single request from periodKey would 404 and
+    // throw away the real Dec 23-28 data along with it.
+    const earliestServed = new Date("2025-12-23T00:00:00Z").getTime();
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input.toString();
+      if (url.includes("/graphql/")) {
+        const body = JSON.parse((init?.body as string) ?? "{}") as { query: string };
+        if (body.query.includes("obtainKrakenToken")) {
+          return jsonResponse({ data: { obtainKrakenToken: { token: "jwt-1" } } });
+        }
+        if (body.query.includes("smartMeterTelemetry")) {
+          return jsonResponse({
+            data: {
+              smartMeterTelemetry: [
+                { readAt: "2025-12-29T10:00:00Z", demand: "500", consumptionDelta: "1000" },
+              ],
+            },
+          });
+        }
+        throw new Error(`Unexpected GraphQL query: ${body.query}`);
+      }
+      if (url.includes("/standard-unit-rates/")) {
+        const parsedUrl = new URL(url);
+        const periodFrom = parsedUrl.searchParams.get("period_from") ?? "2025-12-29T00:00:00.000Z";
+        const periodTo = parsedUrl.searchParams.get("period_to") ?? "2025-12-30T00:00:00.000Z";
+        return jsonResponse({
+          count: 1,
+          next: null,
+          previous: null,
+          results: [
+            {
+              value_exc_vat: 9.52,
+              value_inc_vat: 10,
+              valid_from: periodFrom,
+              valid_to: periodTo,
+              payment_method: "DIRECT_DEBIT",
+            },
+          ],
+        });
+      }
+      if (url.includes("/consumption/")) {
+        const periodFrom = new URL(url).searchParams.get("period_from") ?? "";
+        if (new Date(periodFrom).getTime() < earliestServed) {
+          return new Response("not found", { status: 404 });
+        }
+        return jsonResponse({
+          count: 2,
+          next: null,
+          previous: null,
+          results: [
+            { consumption: 5, interval_start: "2025-12-23T10:00:00Z", interval_end: "2025-12-23T10:30:00Z" },
+            { consumption: 5, interval_start: "2025-12-24T10:00:00Z", interval_end: "2025-12-24T10:30:00Z" },
+          ],
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { status, monthAccumulator } = await computeStatus(
+      testEnv,
+      null,
+      null,
+      null,
+      new Date("2025-12-29T10:01:00Z"),
+    );
+
+    // The real Dec 23-24 data survives the initial 404 instead of being
+    // discarded, plus 1 kWh of live telemetry from today, all at 10p/kWh.
+    expect(status.thisMonthTotalKwh).toBeCloseTo(11);
+    expect(status.thisMonthTotalCostGbp).toBeCloseTo(1.1);
+    expect(status.monthBackfillError).toBeNull();
+    expect(monthAccumulator.firstDataDateKey).toBe("2025-12-23");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("migration narrows forward too, instead of silently keeping the periodKey-based average when the meter starts late", async () => {
+    // Same late-starting-meter scenario as above, but hitting the
+    // resolveMonthAccumulator migration path for an accumulator that's
+    // missing firstDataDateKey (simulating KV state persisted before that
+    // field existed) rather than a fresh cold-start backfill. A plain,
+    // non-narrowing lookup here would 404 on periodKey and silently fall
+    // back to firstDataDateKey = periodKey -- indistinguishable from "no
+    // gap at all" and reproducing the exact bug this field exists to fix.
+    const earliestServed = new Date("2025-12-23T00:00:00Z").getTime();
+    const fetchMock = mockOctopusApi({
+      telemetry: [{ readAt: "2025-12-29T10:10:00Z", demand: 500, consumptionDelta: 1000 }],
+      pencePerKwh: 10,
+    });
+    const originalFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = input.toString();
+      if (url.includes("/consumption/")) {
+        const periodFrom = new URL(url).searchParams.get("period_from") ?? "";
+        if (new Date(periodFrom).getTime() < earliestServed) {
+          return new Response("not found", { status: 404 });
+        }
+        return jsonResponse({
+          count: 1,
+          next: null,
+          previous: null,
+          results: [
+            { consumption: 5, interval_start: "2025-12-23T10:00:00Z", interval_end: "2025-12-23T10:30:00Z" },
+          ],
+        });
+      }
+      return originalFetch(input, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const previousMonth = {
+      periodKey: "2025-12-20",
+      kwhSoFar: 40,
+      costGbpSoFar: 4,
+      lastReadingAt: "2025-12-29T10:05:00Z",
+    } as MonthAccumulator;
+
+    const { monthAccumulator } = await computeStatus(
+      testEnv,
+      null,
+      previousMonth,
+      null,
+      new Date("2025-12-29T10:11:00Z"),
+    );
+
     expect(monthAccumulator.firstDataDateKey).toBe("2025-12-23");
 
     vi.unstubAllGlobals();

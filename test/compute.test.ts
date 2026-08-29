@@ -245,6 +245,7 @@ describe("advanceMonthAccumulator", () => {
       costGbpSoFar: 2,
       lastReadingAt: "2026-01-15T10:05:00Z",
       firstDataDateKey: "2025-12-20",
+      firstDataDateKeyVerified: true,
     };
     const points = [
       { readAt: "2026-01-15T10:00:00Z", consumptionDeltaKwh: 1 }, // before cutoff, skipped
@@ -263,6 +264,7 @@ describe("advanceMonthAccumulator", () => {
       costGbpSoFar: 50,
       lastReadingAt: "2025-12-19T23:00:00Z",
       firstDataDateKey: "2025-11-20",
+      firstDataDateKeyVerified: true,
     };
 
     const acc = advanceMonthAccumulator(
@@ -505,6 +507,7 @@ describe("predictMonthCostGbp", () => {
       costGbpSoFar: 17, // £1/day average over the 17 days elapsed so far
       lastReadingAt: now.toISOString(),
       firstDataDateKey: "2025-12-20", // no gap -- data since day one
+      firstDataDateKeyVerified: true,
     };
 
     const predicted = predictMonthCostGbp(monthAccumulator, now);
@@ -522,6 +525,7 @@ describe("predictMonthCostGbp", () => {
       costGbpSoFar: 0.5,
       lastReadingAt: now.toISOString(),
       firstDataDateKey: "2025-12-20",
+      firstDataDateKeyVerified: true,
     };
 
     // 0.5 (cost so far) + (0.5 / 1) avg/day * 30 days left = 0.5 * 31.
@@ -541,6 +545,7 @@ describe("predictMonthCostGbp", () => {
       costGbpSoFar: 45.5, // averages to £6.50/day over the 7 real days of data
       lastReadingAt: now.toISOString(),
       firstDataDateKey: "2025-12-23",
+      firstDataDateKeyVerified: true,
     };
 
     const predicted = predictMonthCostGbp(monthAccumulator, now);
@@ -617,6 +622,7 @@ describe("computeStatus", () => {
       costGbpSoFar: 4,
       lastReadingAt: "2026-01-15T10:05:00Z",
       firstDataDateKey: "2025-12-20",
+      firstDataDateKeyVerified: true,
     };
 
     const { status } = await computeStatus(
@@ -653,6 +659,7 @@ describe("computeStatus", () => {
       costGbpSoFar: 20,
       lastReadingAt: "2026-01-19T23:00:00Z",
       firstDataDateKey: "2025-12-20",
+      firstDataDateKeyVerified: true,
     };
 
     const { status, monthAccumulator } = await computeStatus(
@@ -952,6 +959,7 @@ describe("computeStatus month/today invariant", () => {
       costGbpSoFar: 0,
       lastReadingAt: "2026-01-15T10:05:00Z",
       firstDataDateKey: "2025-12-20",
+      firstDataDateKeyVerified: true,
     };
 
     const { status, monthAccumulator } = await computeStatus(
@@ -1234,6 +1242,7 @@ describe("computeStatus month backfill", () => {
       costGbpSoFar: 4,
       lastReadingAt: "2026-01-15T10:05:00Z",
       firstDataDateKey: "2025-12-20",
+      firstDataDateKeyVerified: true,
     };
 
     await computeStatus(testEnv, null, previousMonth, null, new Date("2026-01-15T10:11:00Z"));
@@ -1280,6 +1289,88 @@ describe("computeStatus month backfill", () => {
     expect(monthAccumulator.kwhSoFar).toBeCloseTo(41);
     expect(monthAccumulator.costGbpSoFar).toBeCloseTo(4.1);
     expect(monthAccumulator.firstDataDateKey).toBe("2026-01-10");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("re-migrates an accumulator carrying an unverified firstDataDateKey from an earlier buggy migration", async () => {
+    // Simulates the exact failure this account hit in production: an
+    // earlier version of the migration made a single, unnarrowed request
+    // that 404'd against a periodKey predating the meter's real first
+    // reading, silently fell back to firstDataDateKey = periodKey, and
+    // persisted that as if it were settled -- indistinguishable from "no
+    // gap at all" without firstDataDateKeyVerified to say otherwise. Real
+    // data starts 2025-12-23; the stale persisted value incorrectly says
+    // 2025-12-20 (== periodKey) and is NOT marked verified.
+    const earliestServed = new Date("2025-12-23T00:00:00Z").getTime();
+    const fetchMock = mockOctopusApi({
+      telemetry: [{ readAt: "2025-12-29T10:10:00Z", demand: 500, consumptionDelta: 1000 }],
+      pencePerKwh: 10,
+    });
+    const originalFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = input.toString();
+      if (url.includes("/consumption/")) {
+        const periodFrom = new URL(url).searchParams.get("period_from") ?? "";
+        if (new Date(periodFrom).getTime() < earliestServed) {
+          return new Response("not found", { status: 404 });
+        }
+        return jsonResponse({
+          count: 1,
+          next: null,
+          previous: null,
+          results: [
+            { consumption: 5, interval_start: "2025-12-23T10:00:00Z", interval_end: "2025-12-23T10:30:00Z" },
+          ],
+        });
+      }
+      return originalFetch(input, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const previousMonth: MonthAccumulator = {
+      periodKey: "2025-12-20",
+      kwhSoFar: 40,
+      costGbpSoFar: 4,
+      lastReadingAt: "2025-12-29T10:05:00Z",
+      firstDataDateKey: "2025-12-20", // stale, from the old buggy migration
+      firstDataDateKeyVerified: false,
+    };
+
+    const { monthAccumulator } = await computeStatus(
+      testEnv,
+      null,
+      previousMonth,
+      null,
+      new Date("2025-12-29T10:11:00Z"),
+    );
+
+    expect(monthAccumulator.firstDataDateKey).toBe("2025-12-23");
+    expect(monthAccumulator.firstDataDateKeyVerified).toBe(true);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("does not re-check a verified firstDataDateKey on every request", async () => {
+    const fetchMock = mockOctopusApi({
+      telemetry: [{ readAt: "2026-01-15T10:10:00Z", demand: 500, consumptionDelta: 1000 }],
+      pencePerKwh: 10,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const previousMonth: MonthAccumulator = {
+      periodKey: "2025-12-20",
+      kwhSoFar: 40,
+      costGbpSoFar: 4,
+      lastReadingAt: "2026-01-15T10:05:00Z",
+      firstDataDateKey: "2025-12-20",
+      firstDataDateKeyVerified: true,
+    };
+
+    await computeStatus(testEnv, null, previousMonth, null, new Date("2026-01-15T10:11:00Z"));
+
+    const consumptionCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes("/consumption/"));
+    expect(consumptionCalls).toHaveLength(0);
 
     vi.unstubAllGlobals();
   });

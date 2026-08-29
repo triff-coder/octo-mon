@@ -127,6 +127,12 @@ export interface StatusResponse {
   billingPeriodStart: string;
   /** Set when the month backfill was attempted and failed (falling back to a zero-balance start), null otherwise. */
   monthBackfillError: string | null;
+  /** Europe/London date of the earliest day this billing period actually has consumption data for — see MonthAccumulator.firstDataDateKey. Used by predictMonthCostGbp. */
+  firstDataDateKey: string;
+  /** Whether firstDataDateKey came from a real, successful lookup this period, or is still an unverified guess pending retry — see MonthAccumulator.firstDataDateKeyVerified. */
+  firstDataDateKeyVerified: boolean;
+  /** Set when the most recent firstDataDateKey discovery/re-verification attempt failed, null otherwise (mirrors monthBackfillError). */
+  firstDataDateKeyError: string | null;
   /** Cost of the most recently completed UTC clock hour (not the current in-progress one). */
   lastHourCostGbp: number;
   /** kWh consumed in that same most recently completed UTC clock hour. */

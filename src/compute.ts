@@ -480,6 +480,8 @@ interface DiscoveredFirstDataDateKey {
   firstDataDateKey: string;
   /** False on the best-effort failure fallback, so the caller retries on the next tick instead of treating a guess as settled. */
   verified: boolean;
+  /** Set when discovery failed, so the cause is visible in /status rather than only in logs (mirrors monthBackfillError). */
+  error: string | null;
 }
 
 /**
@@ -508,7 +510,9 @@ async function discoverFirstDataDateKey(
   const todayKey = londonDateKey(now);
   const periodStart = londonMidnightUtc(periodKey);
   const todayStart = londonMidnightUtc(todayKey);
-  if (periodStart.getTime() >= todayStart.getTime()) return { firstDataDateKey: todayKey, verified: true };
+  if (periodStart.getTime() >= todayStart.getTime()) {
+    return { firstDataDateKey: todayKey, verified: true, error: null };
+  }
 
   try {
     const intervals = await fetchHistoricalConsumptionFromEarliestAvailable(env, periodStart, todayStart);
@@ -517,9 +521,11 @@ async function discoverFirstDataDateKey(
       const dayKey = londonDateKey(new Date(interval.intervalStart));
       if (dayKey < earliest) earliest = dayKey;
     }
-    return { firstDataDateKey: earliest, verified: true };
-  } catch {
-    return { firstDataDateKey: periodKey, verified: false };
+    return { firstDataDateKey: earliest, verified: true, error: null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("octo-mon firstDataDateKey discovery failed, leaving it unverified:", error);
+    return { firstDataDateKey: periodKey, verified: false, error: message };
   }
 }
 
@@ -527,6 +533,8 @@ interface ResolvedMonthAccumulator {
   accumulator: MonthAccumulator;
   /** Set when backfill was attempted and failed, so the cause is visible in /status rather than only in logs. */
   backfillError: string | null;
+  /** Set when the firstDataDateKey migration/re-verification was attempted and failed, for the same reason as backfillError. */
+  firstDataDateKeyError: string | null;
 }
 
 /**
@@ -552,9 +560,9 @@ async function resolveMonthAccumulator(
     isSameBillingPeriod(new Date(previousMonthAccumulator.lastReadingAt), now)
   ) {
     if (previousMonthAccumulator.firstDataDateKey && previousMonthAccumulator.firstDataDateKeyVerified) {
-      return { accumulator: previousMonthAccumulator, backfillError: null };
+      return { accumulator: previousMonthAccumulator, backfillError: null, firstDataDateKeyError: null };
     }
-    const { firstDataDateKey, verified } = await discoverFirstDataDateKey(
+    const { firstDataDateKey, verified, error } = await discoverFirstDataDateKey(
       env,
       previousMonthAccumulator.periodKey,
       now,
@@ -562,11 +570,12 @@ async function resolveMonthAccumulator(
     return {
       accumulator: { ...previousMonthAccumulator, firstDataDateKey, firstDataDateKeyVerified: verified },
       backfillError: null,
+      firstDataDateKeyError: error,
     };
   }
   try {
     const accumulator = await backfillMonthAccumulator(env, now);
-    return { accumulator, backfillError: null };
+    return { accumulator, backfillError: null, firstDataDateKeyError: null };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("octo-mon month backfill failed, starting this month's total from zero:", error);
@@ -580,6 +589,7 @@ async function resolveMonthAccumulator(
         firstDataDateKeyVerified: true,
       },
       backfillError: message,
+      firstDataDateKeyError: null,
     };
   }
 }
@@ -661,11 +671,11 @@ export async function computeStatus(
   const todayRates = await fetchUnitRatesForDay(env, todayKey);
   const ratesByDay = new Map<string, UnitRate[]>([[todayKey, todayRates]]);
 
-  const { accumulator: resolvedMonthAccumulator, backfillError } = await resolveMonthAccumulator(
-    env,
-    previousMonthAccumulator,
-    now,
-  );
+  const {
+    accumulator: resolvedMonthAccumulator,
+    backfillError,
+    firstDataDateKeyError,
+  } = await resolveMonthAccumulator(env, previousMonthAccumulator, now);
 
   // The accumulator resets for a new day (see advanceTodayAccumulator), so
   // whenever it's reused it's always from earlier today; fetchSince is
@@ -739,6 +749,9 @@ export async function computeStatus(
     thisMonthTotalCostGbp: monthAccumulator.costGbpSoFar,
     billingPeriodStart: monthAccumulator.periodKey,
     monthBackfillError: backfillError,
+    firstDataDateKey: monthAccumulator.firstDataDateKey,
+    firstDataDateKeyVerified: monthAccumulator.firstDataDateKeyVerified,
+    firstDataDateKeyError,
     lastHourCostGbp,
     lastHourKwh,
     hourlyBuckets,

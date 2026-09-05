@@ -42,7 +42,8 @@ export default {
         return jsonResponse({ error: "unauthorized" }, 401);
       }
       try {
-        const history = await getOrComputeDailyHistory(env);
+        const forceRefresh = url.searchParams.get("refresh") === "true";
+        const history = await getOrComputeDailyHistory(env, new Date(), forceRefresh);
         return jsonResponse(history, 200);
       } catch (error) {
         console.error("octo-mon /history failed:", error);

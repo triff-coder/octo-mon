@@ -1677,6 +1677,27 @@ describe("computeDailyHistory", () => {
     vi.unstubAllGlobals();
   });
 
+  it("adds that day's standing charge to each day that has consumption data", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        pencePerKwh: 20,
+        standingChargePencePerDay: 50,
+        consumption: [
+          { consumptionKwh: 2, intervalStart: "2026-01-15T10:00:00Z", intervalEnd: "2026-01-15T10:30:00Z" },
+        ],
+      }),
+    );
+
+    const now = new Date("2026-01-31T10:00:00Z");
+    const days = await computeDailyHistory(testEnv, now);
+
+    // 2 kWh @ 20p consumption + 50p/day standing charge.
+    expect(days).toEqual([{ dateKey: "2026-01-15", kwh: 2, costGbp: 0.4 + 0.5 }]);
+
+    vi.unstubAllGlobals();
+  });
+
   it("returns an empty list when there's no consumption data at all yet", async () => {
     vi.stubGlobal("fetch", mockOctopusApi({ pencePerKwh: 20, consumption: [] }));
 
@@ -1724,6 +1745,9 @@ describe("computeDailyHistory", () => {
             { consumption: 2, interval_start: "2026-01-20T10:00:00Z", interval_end: "2026-01-20T10:30:00Z" },
           ],
         });
+      }
+      if (url.includes("/standing-charges/")) {
+        return jsonResponse({ count: 0, next: null, previous: null, results: [] });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -1774,6 +1798,12 @@ describe("computeDailyHistory", () => {
         if (url.includes("/consumption/")) {
           return new Response("not found", { status: 404 });
         }
+        if (url.includes("/standing-charges/")) {
+          return new Response(
+            JSON.stringify({ count: 0, next: null, previous: null, results: [] }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
         throw new Error(`Unexpected fetch: ${url}`);
       }),
     );
@@ -1804,6 +1834,54 @@ describe("computeDailyHistory", () => {
 
     vi.unstubAllGlobals();
   });
+
+  it("adds each day's standing charge on the hour-bucket fallback path too", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const url = input.toString();
+        if (url.includes("/consumption/")) {
+          return new Response("not found", { status: 404 });
+        }
+        if (url.includes("/standing-charges/")) {
+          return new Response(
+            JSON.stringify({
+              count: 1,
+              next: null,
+              previous: null,
+              results: [
+                {
+                  value_exc_vat: 47.62,
+                  value_inc_vat: 50,
+                  valid_from: "2000-01-01T00:00:00Z",
+                  valid_to: null,
+                  payment_method: "DIRECT_DEBIT",
+                },
+              ],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    await testEnv.OCTOMON_KV.put(
+      "hours:buckets",
+      JSON.stringify({
+        lastReadingAt: "2026-01-29T10:30:00.000Z",
+        buckets: [{ hourStart: "2026-01-29T10:00:00.000Z", kwhSoFar: 1, costGbpSoFar: 0.2 }],
+      }),
+    );
+
+    const now = new Date("2026-01-31T10:00:00Z");
+    const days = await computeDailyHistory(testEnv, now);
+
+    // 0.2 consumption + 50p/day standing charge.
+    expect(days).toEqual([{ dateKey: "2026-01-29", kwh: 1, costGbp: 0.2 + 0.5 }]);
+
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("getOrComputeDailyHistory", () => {
@@ -1828,6 +1906,20 @@ describe("getOrComputeDailyHistory", () => {
     // Well within the 12h TTL, but past the Europe/London midnight boundary.
     await getOrComputeDailyHistory(testEnv, new Date("2026-01-31T23:50:00Z"));
     await getOrComputeDailyHistory(testEnv, new Date("2026-02-01T00:10:00Z"));
+
+    const consumptionCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes("/consumption/"));
+    expect(consumptionCalls).toHaveLength(2);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("bypasses a fresh cache and recomputes when forceRefresh is true, e.g. the dashboard's Recalculate button", async () => {
+    const fetchMock = mockOctopusApi({ pencePerKwh: 20, consumption: [] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const now = new Date("2026-01-31T10:00:00Z");
+    await getOrComputeDailyHistory(testEnv, now);
+    await getOrComputeDailyHistory(testEnv, now, true);
 
     const consumptionCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes("/consumption/"));
     expect(consumptionCalls).toHaveLength(2);

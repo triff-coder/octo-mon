@@ -912,10 +912,11 @@ async function fetchHistoricalConsumptionNarrowing(
  * ~8 days) rather than the full 30 — real history the Worker has already
  * collected, just less of it.
  */
-function computeDailyHistoryFromHourBuckets(
+async function computeDailyHistoryFromHourBuckets(
+  env: Env,
   state: HourBucketsState | null,
   now: Date,
-): DailyHistoryEntry[] {
+): Promise<DailyHistoryEntry[]> {
   if (!state) return [];
   const todayKey = londonDateKey(now);
   const totalsByDay = new Map<string, { kwh: number; costGbp: number }>();
@@ -929,9 +930,12 @@ function computeDailyHistoryFromHourBuckets(
     totalsByDay.set(dayKey, totals);
   }
 
-  return [...totalsByDay.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([dateKey, totals]) => ({ dateKey, kwh: totals.kwh, costGbp: totals.costGbp }));
+  const entries: DailyHistoryEntry[] = [];
+  for (const [dateKey, totals] of [...totalsByDay.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const standingChargePence = await fetchStandingChargeForDay(env, dateKey);
+    entries.push({ dateKey, kwh: totals.kwh, costGbp: totals.costGbp + standingChargePence / 100 });
+  }
+  return entries;
 }
 
 /**
@@ -953,6 +957,11 @@ function computeDailyHistoryFromHourBuckets(
  * falls back to computeDailyHistoryFromHourBuckets instead of failing the
  * whole request, same "best-effort, degrade gracefully" approach already
  * used for the month backfill.
+ *
+ * Each day's total also includes that day's own standing charge (fetched
+ * per day, same as unit rates), added only for days that actually have
+ * consumption data — a day with no data gets no fabricated standing charge
+ * either, consistent with it being omitted entirely rather than padded.
  */
 export async function computeDailyHistory(
   env: Env,
@@ -969,7 +978,7 @@ export async function computeDailyHistory(
       "octo-mon /history: Octopus consumption endpoint unavailable, falling back to accumulated hour-bucket data:",
       error,
     );
-    return computeDailyHistoryFromHourBuckets(await loadHourBuckets(env), now);
+    return computeDailyHistoryFromHourBuckets(env, await loadHourBuckets(env), now);
   }
 
   const ratesCache = new Map<string, UnitRate[]>();
@@ -1001,7 +1010,8 @@ export async function computeDailyHistory(
     const dateKey = addDaysToDateKey(todayKey, -i);
     if (!daysWithData.has(dateKey)) continue;
     const totals = totalsByDay.get(dateKey) ?? { kwh: 0, costGbp: 0 };
-    days.push({ dateKey, kwh: totals.kwh, costGbp: totals.costGbp });
+    const standingChargePence = await fetchStandingChargeForDay(env, dateKey);
+    days.push({ dateKey, kwh: totals.kwh, costGbp: totals.costGbp + standingChargePence / 100 });
   }
 
   return days;
@@ -1013,14 +1023,22 @@ export async function computeDailyHistory(
  * dashboard's "LAST 30 DAYS" list and the large widget's compact daily
  * history chart — small/medium widgets have no room for it and don't call
  * this endpoint.
+ *
+ * Pass `forceRefresh` to skip the cache and always recompute — e.g. the
+ * dashboard's "Recalculate" button, so a cached snapshot from before a
+ * pricing change (like the standing charge being added to these totals)
+ * can be replaced on demand instead of waiting out the 12h TTL.
  */
 export async function getOrComputeDailyHistory(
   env: Env,
   now: Date = new Date(),
+  forceRefresh = false,
 ): Promise<DailyHistoryResponse> {
   const kvKey = DAILY_HISTORY_KV_KEY_PREFIX + londonDateKey(now);
-  const cached = await getJson<DailyHistoryResponse>(env.OCTOMON_KV, kvKey);
-  if (cached) return cached;
+  if (!forceRefresh) {
+    const cached = await getJson<DailyHistoryResponse>(env.OCTOMON_KV, kvKey);
+    if (cached) return cached;
+  }
 
   const response: DailyHistoryResponse = {
     days: await computeDailyHistory(env, now),

@@ -266,6 +266,13 @@ grows a little further back each day the Worker keeps running. The response
 is cached in KV for 12 hours, since fully-past days never change and this
 doesn't need near-real-time freshness.
 
+Each day's total also includes that day's own standing charge. `GET
+/history?refresh=true` bypasses the 12h cache and recomputes immediately —
+the dashboard's "&#8635; Recalculate" button (next to "LAST 30 DAYS") calls
+this so a snapshot cached before a pricing change (like the standing charge
+being added to these totals) can be brought up to date on demand, without
+needing to run a command or wait out the cache.
+
 ### Web dashboard
 
 ```
@@ -283,7 +290,11 @@ days oldest first; the page reverses them for display). It's fetched once
 per page load from `GET /history` (not on the
 30-second poll loop, since 30 days of history doesn't need near-real-time
 freshness) — bookmark the page, or open it any time you want a reading
-that's more current than the widget. It's not subject to iOS's home-screen widget
+that's more current than the widget. A dashboard-only "&#8635; Recalculate"
+button next to that list forces an immediate `?refresh=true` recompute
+instead of waiting out the 12h cache (see "GET /history" above) — there's no
+widget equivalent, since a home-screen widget has no interactive controls to
+tap beyond opening its URL. It's not subject to iOS's home-screen widget
 refresh throttling: every 30 seconds (and on every page load/reload) it calls
 `/status?refresh=true`, which skips the cached snapshot and fetches live from
 Octopus — so what you see is never older than your Home Mini's own last

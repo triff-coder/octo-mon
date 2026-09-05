@@ -211,6 +211,9 @@ describe("GET /history", () => {
           ],
         });
       }
+      if (url.includes("/standing-charges/")) {
+        return jsonResponse({ count: 0, next: null, previous: null, results: [] });
+      }
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -223,6 +226,35 @@ describe("GET /history", () => {
     const body = (await response.json()) as { days: { dateKey: string }[] };
     expect(body.days).toHaveLength(1);
     expect(body.days[0]?.dateKey).toBe(yesterdayKey);
+  });
+
+  it("bypasses a cached snapshot and recomputes when ?refresh=true", async () => {
+    await testEnv.OCTOMON_KV.put(
+      `history:daily:${new Date().toISOString().slice(0, 10)}`,
+      JSON.stringify({ days: [{ dateKey: "2000-01-01", kwh: 1, costGbp: 1 }], generatedAt: new Date().toISOString() }),
+    );
+
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = input.toString();
+      const jsonResponse = (body: unknown) =>
+        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+
+      if (url.includes("/consumption/")) {
+        return jsonResponse({ count: 0, next: null, previous: null, results: [] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await callFetch(
+      new Request("https://example.com/history?refresh=true", { headers: { "X-Widget-Secret": "test-secret" } }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { days: { dateKey: string }[] };
+    // The stale cached snapshot's fake day is gone -- this recomputed live.
+    expect(body.days.some((d) => d.dateKey === "2000-01-01")).toBe(false);
+    expect(fetchMock).toHaveBeenCalled();
   });
 });
 

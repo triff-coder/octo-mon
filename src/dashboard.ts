@@ -72,7 +72,18 @@ export function renderDashboardHtml(token: string): string {
   .predicted-row { display: flex; gap: 32px; margin-bottom: 24px; }
   #chartLabel { font-size: 11px; color: #9aa0a8; margin-bottom: 8px; }
   canvas { width: 100%; height: 160px; display: block; }
-  #historyLabel { font-size: 11px; color: #9aa0a8; margin: 24px 0 8px; }
+  .history-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin: 24px 0 8px;
+  }
+  #historyLabel { font-size: 11px; color: #9aa0a8; margin: 0; }
+  #refreshHistoryBtn {
+    font: inherit; font-size: 10px; font-weight: 600; color: #9aa0a8;
+    background: transparent; border: 1px solid #3a3f47; border-radius: 6px;
+    padding: 4px 10px; cursor: pointer;
+  }
+  #refreshHistoryBtn:hover:not(:disabled) { border-color: #4FC3F7; color: #4FC3F7; }
+  #refreshHistoryBtn:disabled { opacity: 0.5; cursor: default; }
   .history-empty { font-size: 12px; color: #9aa0a8; }
   .history-boundary {
     display: flex; align-items: center; gap: 8px;
@@ -158,7 +169,10 @@ export function renderDashboardHtml(token: string): string {
   <p id="chartLabel">LAST 24 HOURS &middot; mark = 7-day avg</p>
   <canvas id="chart" width="960" height="320"></canvas>
 
-  <p id="historyLabel">LAST 30 DAYS</p>
+  <div class="history-header">
+    <p id="historyLabel">LAST 30 DAYS</p>
+    <button id="refreshHistoryBtn" type="button">&#8635; Recalculate</button>
+  </div>
   <div class="history-list" id="historyList"></div>
 
   <p id="footer">Loading&hellip;</p>
@@ -186,6 +200,7 @@ export function renderDashboardHtml(token: string): string {
   var predictedMonthCostEl = document.getElementById("predictedMonthCost");
   var staleBadgeEl = document.getElementById("staleBadge");
   var historyListEl = document.getElementById("historyList");
+  var refreshHistoryBtn = document.getElementById("refreshHistoryBtn");
   var footerEl = document.getElementById("footer");
   var errorBannerEl = document.getElementById("errorBanner");
   var canvas = document.getElementById("chart");
@@ -408,12 +423,16 @@ export function renderDashboardHtml(token: string): string {
     });
   }
 
+  function fetchHistory(forceRefresh) {
+    var url = "/history?token=" + encodeURIComponent(TOKEN) + (forceRefresh ? "&refresh=true" : "");
+    return fetch(url).then(function (response) {
+      if (!response.ok) throw new Error("Worker returned HTTP " + response.status);
+      return response.json();
+    });
+  }
+
   function loadHistory() {
-    fetch("/history?token=" + encodeURIComponent(TOKEN))
-      .then(function (response) {
-        if (!response.ok) throw new Error("Worker returned HTTP " + response.status);
-        return response.json();
-      })
+    fetchHistory(false)
       .then(function (data) {
         renderHistory(data.days);
       })
@@ -424,6 +443,31 @@ export function renderDashboardHtml(token: string): string {
         historyListEl.classList.add("history-empty");
       });
   }
+
+  // Bypasses the 12h /history cache so a stale cached snapshot -- e.g. one
+  // computed before a pricing change like the standing charge being added
+  // to these totals -- can be replaced on demand rather than waiting it out.
+  function recalculateHistory() {
+    refreshHistoryBtn.disabled = true;
+    refreshHistoryBtn.textContent = "Recalculating\\u2026";
+
+    fetchHistory(true)
+      .then(function (data) {
+        renderHistory(data.days);
+        refreshHistoryBtn.textContent = "Updated \\u2713";
+      })
+      .catch(function () {
+        refreshHistoryBtn.textContent = "Failed \\u2013 retry";
+      })
+      .then(function () {
+        setTimeout(function () {
+          refreshHistoryBtn.textContent = "\\u21bb Recalculate";
+          refreshHistoryBtn.disabled = false;
+        }, 2500);
+      });
+  }
+
+  refreshHistoryBtn.addEventListener("click", recalculateHistory);
 
   function render(status, stale) {
     currentCostEl.textContent = formatPounds(status.currentCostPerHourGbp) + "/hr";

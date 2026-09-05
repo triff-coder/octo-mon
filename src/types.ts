@@ -104,17 +104,20 @@ export interface StatusResponse {
   currentDemandKw: number;
   currentCostPerHourGbp: number;
   todayTotalKwh: number;
+  /** Today's consumption cost so far, plus a full day's standing charge (see fetchStandingChargeForDay) — the standing charge accrues once per calendar day regardless of usage, so it's added in full rather than prorated by how much of the day has elapsed. */
   todayTotalCostGbp: number;
   /**
    * Total spend for the previous Europe/London calendar day, derived by
    * summing `hourlyBuckets`' underlying per-hour totals for that date
    * (not a separately-tracked accumulator) — so, like the chart, it fills
    * in gradually and undercounts any hour with a telemetry gap rather than
-   * failing outright.
+   * failing outright. Consumption cost only — unlike `todayTotalCostGbp`,
+   * this does not include a standing charge.
    */
   yesterdayTotalKwh: number;
   yesterdayTotalCostGbp: number;
   thisMonthTotalKwh: number;
+  /** This billing period's consumption cost so far, plus the standing charge for every elapsed day of the period (today's rate assumed for the whole period — see computeStatus). */
   thisMonthTotalCostGbp: number;
   billingPeriodStart: string;
   /** Set when the month backfill was attempted and failed (falling back to a zero-balance start), null otherwise. */
@@ -123,7 +126,7 @@ export interface StatusResponse {
   firstDataDateKey: string;
   /** How many days of this billing period have complete recorded data behind predictedMonthCostGbp's daily average (excludes today and the first, usually partial, day). */
   completeDataDayCount: number;
-  /** Cost of the most recently completed UTC clock hour (not the current in-progress one). */
+  /** Cost of the most recently completed UTC clock hour (not the current in-progress one). Consumption cost only — never includes the standing charge. */
   lastHourCostGbp: number;
   /** kWh consumed in that same most recently completed UTC clock hour. */
   lastHourKwh: number;
@@ -134,18 +137,21 @@ export interface StatusResponse {
    * rather than missing data. `weeklyAvgCostGbp` is the average cost of
    * that same hour-of-day over the preceding up-to-7 days (0 until enough
    * history has accumulated), for an at-a-glance "vs. usual" comparison.
+   * Consumption cost only — never includes the standing charge.
    */
   hourlyBuckets: { hourStart: string; costGbp: number; kwh: number; weeklyAvgCostGbp: number }[];
   /**
    * Predicted total cost for today (Europe/London calendar day): today's
    * actual cost so far plus, for each hour of today still to come, that
-   * hour-of-day's average cost over up to the preceding 7 days.
+   * hour-of-day's average cost over up to the preceding 7 days — plus
+   * today's standing charge (already accrued in full, not prorated).
    */
   predictedTodayCostGbp: number;
   /**
-   * Predicted total cost for the current Octopus billing period, by
-   * extrapolating the average daily cost so far (including today) across
-   * the whole period.
+   * Predicted total cost for the current Octopus billing period: the
+   * consumption estimate (extrapolating the average daily cost so far,
+   * including today, across the whole period) plus the standing charge for
+   * every day of the period, elapsed and still to come, at today's rate.
    */
   predictedMonthCostGbp: number;
   /**

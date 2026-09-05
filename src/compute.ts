@@ -2,6 +2,7 @@ import { getJson, putJson } from "./cache";
 import {
   fetchHistoricalConsumption,
   fetchPlannedDispatches,
+  fetchStandingChargeForDay,
   fetchTelemetry,
   fetchUnitRatesForDay,
   obtainKrakenJwt,
@@ -742,8 +743,31 @@ export async function computeStatus(
   const lastHourKwh = hourlyBuckets.at(-1)?.kwh ?? 0;
   const nextAgileSlots = await resolveNextAgileSlots(env, jwt, todayRates, now);
   const yesterdayTotal = sumHourBucketsForLondonDate(hourBuckets, addDaysToDateKey(todayKey, -1));
-  const predictedTodayCostGbp = predictTodayCostGbp(hourBuckets, accumulator.costGbpSoFar, now);
-  const predictedMonthCostGbp = predictMonthCostGbp(monthAccumulator, predictedTodayCostGbp, now);
+
+  // The standing charge is a flat daily fee charged once per calendar day
+  // regardless of consumption, so unlike everything above it can't be priced
+  // per telemetry point -- it's folded in here instead of into the
+  // accumulators (which stay consumption-only, since they also back the
+  // hourly/yesterday figures those must NOT include it). Today's rate is
+  // assumed to hold for every elapsed day of the billing period and for
+  // every day still to come: standing charges change far less often than
+  // unit rates, so this is a reasonable stand-in for fetching each day's own
+  // rate individually.
+  const standingChargePenceToday = await fetchStandingChargeForDay(env, todayKey);
+  const standingChargeGbpToday = standingChargePenceToday / 100;
+  const periodStartUtc = londonMidnightUtc(monthAccumulator.periodKey);
+  const daysElapsedInPeriod = Math.round((londonMidnightUtc(todayKey).getTime() - periodStartUtc.getTime()) / 86_400_000) + 1;
+  const totalDaysInPeriod = Math.round((nextBillingPeriodStartUtc(now).getTime() - periodStartUtc.getTime()) / 86_400_000);
+  const monthStandingChargeGbpSoFar = standingChargeGbpToday * daysElapsedInPeriod;
+  const predictedMonthStandingChargeGbp = standingChargeGbpToday * totalDaysInPeriod;
+
+  const todayTotalCostGbp = accumulator.costGbpSoFar + standingChargeGbpToday;
+  const thisMonthTotalCostGbp = monthAccumulator.costGbpSoFar + monthStandingChargeGbpSoFar;
+  const predictedTodayConsumptionCostGbp = predictTodayCostGbp(hourBuckets, accumulator.costGbpSoFar, now);
+  const predictedTodayCostGbp = predictedTodayConsumptionCostGbp + standingChargeGbpToday;
+  const predictedMonthCostGbp =
+    predictMonthCostGbp(monthAccumulator, predictedTodayConsumptionCostGbp, now) + predictedMonthStandingChargeGbp;
+
   const completeDataDays = completeDataDayKeys(monthAccumulator, todayKey);
   const recordedDayKeys = Object.keys(monthAccumulator.dailyCostsGbp ?? {}).sort();
 
@@ -753,11 +777,11 @@ export async function computeStatus(
     currentDemandKw,
     currentCostPerHourGbp,
     todayTotalKwh: accumulator.kwhSoFar,
-    todayTotalCostGbp: accumulator.costGbpSoFar,
+    todayTotalCostGbp,
     yesterdayTotalKwh: yesterdayTotal.kwhSoFar,
     yesterdayTotalCostGbp: yesterdayTotal.costGbpSoFar,
     thisMonthTotalKwh: monthAccumulator.kwhSoFar,
-    thisMonthTotalCostGbp: monthAccumulator.costGbpSoFar,
+    thisMonthTotalCostGbp,
     billingPeriodStart: monthAccumulator.periodKey,
     monthBackfillError: backfillError,
     firstDataDateKey: recordedDayKeys[0] ?? todayKey,

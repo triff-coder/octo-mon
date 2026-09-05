@@ -1,0 +1,14 @@
+{
+  "count": 1,
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "value_exc_vat": 45.0,
+      "value_inc_vat": 47.25,
+      "valid_from": "2025-01-01T00:00:00Z",
+      "valid_to": null,
+      "payment_method": "DIRECT_DEBIT"
+    }
+  ]
+}

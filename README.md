@@ -7,9 +7,12 @@ An iPhone home-screen widget (built with [Scriptable](https://scriptable.app/)) 
   (Agile, Intelligent Octopus Go, a plain fixed rate, ...), configured via
   your product/tariff codes
 - **Last hour's cost**: spend in the most recently completed clock hour, in £
-- **Today's total**: running spend so far today, in £
+  (consumption only — see below)
+- **Today's total**: running spend so far today, in £, including a full day's
+  standing charge
 - **This month's total**: running spend since the start of the current Octopus
-  billing period (the 20th of each month), in £
+  billing period (the 20th of each month), in £, including the standing
+  charge for every elapsed day of the period
 - **24-hour chart** (medium and large widgets): a bar chart of spend per hour
   over the last 24 complete hours, with a small mark on each bar showing what
   that hour-of-day has cost on average over the preceding week — so you can
@@ -43,6 +46,12 @@ Octopus REST API (unit rates)                ─┼─▶ Cloudflare Worker ─�
   `OCTOPUS_TARIFF_CODE` to whatever's actually on your account (check your
   [account dashboard](https://octopus.energy/dashboard/) — don't assume it's
   Agile just because that's this project's most common use case).
+- The standing charge (the flat daily fee, in pence, charged regardless of
+  usage) comes from the equivalent `/standing-charges/` endpoint on the same
+  product/tariff. It's added to today's and this month's totals (a full
+  day's charge per calendar day, since it accrues independently of
+  consumption) but never to the hourly figures — the last-hour stat and the
+  24-hour chart stay consumption-only.
 - A Cron Trigger runs every 5 minutes, pricing new telemetry against the rate
   in effect at the time and accumulating it into a "today" total that resets
   at local (Europe/London) midnight.

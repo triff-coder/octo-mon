@@ -130,6 +130,9 @@ describe("GET /status", () => {
       if (url.includes("/consumption/")) {
         return jsonResponse({ count: 0, next: null, previous: null, results: [] });
       }
+      if (url.includes("/standing-charges/")) {
+        return jsonResponse({ count: 0, next: null, previous: null, results: [] });
+      }
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);

@@ -256,6 +256,64 @@ export async function fetchUnitRatesForDay(env: Env, dateKey: string): Promise<U
   return rates;
 }
 
+interface RawStandingChargeEntry {
+  value_inc_vat: number;
+  valid_from: string;
+  valid_to: string | null;
+}
+
+interface StandingChargePage {
+  next: string | null;
+  results: RawStandingChargeEntry[];
+}
+
+/**
+ * Fetches and caches the standing charge (a flat daily fee, in pence,
+ * charged regardless of consumption) in effect on the Europe/London
+ * calendar day identified by `dateKey` — works for any Octopus tariff, not
+ * just Agile. Like fetchUnitRatesForDay, a day's standing charge is
+ * immutable once published, so this is cached in KV for hours rather than
+ * seconds. Returns 0 if no standing charge is published for that day
+ * (shouldn't normally happen, but better than failing the whole /status
+ * response over it).
+ */
+export async function fetchStandingChargeForDay(env: Env, dateKey: string): Promise<number> {
+  const cacheKey = `standing-charge:${dateKey}`;
+  const cached = await getJson<number>(env.OCTOMON_KV, cacheKey);
+  if (cached !== null) return cached;
+
+  const periodFrom = londonMidnightUtc(dateKey).toISOString();
+  const periodTo = londonMidnightUtc(addDaysToDateKey(dateKey, 1)).toISOString();
+
+  const results: RawStandingChargeEntry[] = [];
+  let url: string | null =
+    `${REST_BASE}/products/${env.OCTOPUS_PRODUCT_CODE}/electricity-tariffs/${env.OCTOPUS_TARIFF_CODE}` +
+    `/standing-charges/?period_from=${encodeURIComponent(periodFrom)}&period_to=${encodeURIComponent(periodTo)}`;
+
+  for (let page = 0; url && page < MAX_RATE_PAGES; page++) {
+    const response: Response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Octopus standing-charges request failed: HTTP ${response.status}`);
+    }
+    const body = (await response.json()) as StandingChargePage;
+    results.push(...body.results);
+    url = body.next;
+  }
+
+  const dayStartMs = londonMidnightUtc(dateKey).getTime();
+  const entry = results.find(
+    (r) =>
+      new Date(r.valid_from).getTime() <= dayStartMs &&
+      (r.valid_to === null || new Date(r.valid_to).getTime() > dayStartMs),
+  );
+  const pencePerDay = entry?.value_inc_vat ?? 0;
+
+  // Cache for 6 hours, same reasoning as fetchUnitRatesForDay.
+  await putJson(env.OCTOMON_KV, cacheKey, pencePerDay, { expirationTtl: 6 * 60 * 60 });
+
+  return pencePerDay;
+}
+
 /**
  * Thrown by fetchHistoricalConsumption so callers can distinguish "no data
  * this far back" (404 — Octopus 404s the whole request if `periodFrom`

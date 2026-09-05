@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fetchHistoricalConsumption,
   fetchPlannedDispatches,
+  fetchStandingChargeForDay,
   fetchTelemetry,
   fetchUnitRatesForDay,
   obtainKrakenJwt,
@@ -10,6 +11,7 @@ import {
 import type { Env } from "../src/types";
 import consumptionFixture from "./fixtures/consumption.sample.json";
 import ratesFixture from "./fixtures/rates.sample.json";
+import standingChargesFixture from "./fixtures/standing-charges.sample.json";
 import telemetryFixture from "./fixtures/telemetry.sample.json";
 
 const testEnv = env as unknown as Env;
@@ -176,6 +178,72 @@ describe("fetchUnitRatesForDay", () => {
     );
     expect(url).toContain(encodeURIComponent("2026-01-15T00:00:00.000Z"));
     expect(url).toContain(encodeURIComponent("2026-01-16T00:00:00.000Z"));
+  });
+});
+
+describe("fetchStandingChargeForDay", () => {
+  it("fetches and normalizes the standing charge in effect for the day", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(standingChargesFixture)));
+
+    const pencePerDay = await fetchStandingChargeForDay(testEnv, "2026-01-15");
+
+    expect(pencePerDay).toBe(47.25);
+  });
+
+  it("caches the result so a second call doesn't refetch", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(standingChargesFixture));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchStandingChargeForDay(testEnv, "2026-01-15");
+    await fetchStandingChargeForDay(testEnv, "2026-01-15");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("requests the correct product/tariff path and UTC period bounds", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(standingChargesFixture));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchStandingChargeForDay(testEnv, "2026-01-15");
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toContain(
+      "/products/AGILE-24-10-01/electricity-tariffs/E-1R-AGILE-24-10-01-C/standing-charges/",
+    );
+    expect(url).toContain(encodeURIComponent("2026-01-15T00:00:00.000Z"));
+    expect(url).toContain(encodeURIComponent("2026-01-16T00:00:00.000Z"));
+  });
+
+  it("picks the entry whose validity window actually covers the requested day", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          count: 2,
+          next: null,
+          previous: null,
+          results: [
+            { value_exc_vat: 40, value_inc_vat: 42, valid_from: "2025-01-01T00:00:00Z", valid_to: "2026-01-15T00:00:00Z" },
+            { value_exc_vat: 45, value_inc_vat: 47.25, valid_from: "2026-01-15T00:00:00Z", valid_to: null },
+          ],
+        }),
+      ),
+    );
+
+    const pencePerDay = await fetchStandingChargeForDay(testEnv, "2026-01-15");
+
+    expect(pencePerDay).toBe(47.25);
+  });
+
+  it("returns 0 when no standing charge is published for that day", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ count: 0, next: null, previous: null, results: [] })),
+    );
+
+    const pencePerDay = await fetchStandingChargeForDay(testEnv, "2026-01-15");
+
+    expect(pencePerDay).toBe(0);
   });
 });
 

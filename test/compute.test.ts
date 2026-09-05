@@ -44,6 +44,8 @@ interface MockApiOptions {
   consumption?: { consumptionKwh: number; intervalStart: string; intervalEnd: string }[];
   /** Simulates the consumption endpoint failing (e.g. wrong MPAN/serial, no data yet). */
   consumptionFails?: boolean;
+  /** Standing charge (pence/day) returned for every day. Defaults to 0 so tests that don't care about it are unaffected. */
+  standingChargePencePerDay?: number;
 }
 
 function mockOctopusApi(opts: MockApiOptions) {
@@ -79,6 +81,26 @@ function mockOctopusApi(opts: MockApiOptions) {
             value_inc_vat: pencePerKwh,
             valid_from: periodFrom,
             valid_to: periodTo,
+            payment_method: "DIRECT_DEBIT",
+          },
+        ],
+      });
+    }
+
+    if (url.includes("/standing-charges/")) {
+      // Priced open-ended (valid_to: null) so it always covers whatever day
+      // is actually being requested, same as a real never-changed tariff.
+      const pencePerDay = opts.standingChargePencePerDay ?? 0;
+      return jsonResponse({
+        count: 1,
+        next: null,
+        previous: null,
+        results: [
+          {
+            value_exc_vat: pencePerDay / 1.05,
+            value_inc_vat: pencePerDay,
+            valid_from: "2000-01-01T00:00:00Z",
+            valid_to: null,
             payment_method: "DIRECT_DEBIT",
           },
         ],
@@ -818,6 +840,120 @@ describe("computeStatus", () => {
   });
 });
 
+describe("computeStatus standing charge", () => {
+  // Billing period 2025-12-20 -> 2026-01-20 (31 days); "today" 2026-01-15 is
+  // the 27th day of that period (both inclusive).
+  const now = new Date("2026-01-15T10:06:00Z");
+  const DAYS_ELAPSED = 27;
+  const DAYS_IN_PERIOD = 31;
+
+  it("adds a full day's standing charge to today's total, on top of consumption", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:00:00Z", demand: 1000, consumptionDelta: 1000 }],
+        pencePerKwh: 10,
+        standingChargePencePerDay: 50,
+      }),
+    );
+
+    const { status } = await computeStatus(testEnv, null, null, null, now);
+
+    // 1 kWh @ 10p consumption + 50p/day standing charge.
+    expect(status.todayTotalCostGbp).toBeCloseTo(0.1 + 0.5);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("adds standing charge for every elapsed day of the billing period to this month's total", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:00:00Z", demand: 1000, consumptionDelta: 1000 }],
+        pencePerKwh: 10,
+        standingChargePencePerDay: 50,
+      }),
+    );
+
+    const { status } = await computeStatus(testEnv, null, null, null, now);
+
+    // Only today's consumption (nothing to backfill), plus 27 days' worth of
+    // standing charge (the period's own start day through today, inclusive).
+    expect(status.thisMonthTotalCostGbp).toBeCloseTo(0.1 + 0.5 * DAYS_ELAPSED);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("adds today's standing charge to the predicted today total, on top of the consumption prediction", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:00:00Z", demand: 1000, consumptionDelta: 1000 }],
+        pencePerKwh: 10,
+        standingChargePencePerDay: 50,
+      }),
+    );
+
+    const { status, accumulator, hourBuckets } = await computeStatus(testEnv, null, null, null, now);
+
+    const predictedConsumptionOnly = predictTodayCostGbp(hourBuckets, accumulator.costGbpSoFar, now);
+    expect(status.predictedTodayCostGbp).toBeCloseTo(predictedConsumptionOnly + 0.5);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("adds the whole billing period's standing charge (elapsed + remaining, at today's rate) to the predicted month total", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:00:00Z", demand: 1000, consumptionDelta: 1000 }],
+        pencePerKwh: 10,
+        standingChargePencePerDay: 50,
+      }),
+    );
+
+    const { status, accumulator, monthAccumulator, hourBuckets } = await computeStatus(
+      testEnv,
+      null,
+      null,
+      null,
+      now,
+    );
+
+    const predictedConsumptionOnlyToday = predictTodayCostGbp(hourBuckets, accumulator.costGbpSoFar, now);
+    const predictedConsumptionOnlyMonth = predictMonthCostGbp(monthAccumulator, predictedConsumptionOnlyToday, now);
+    expect(status.predictedMonthCostGbp).toBeCloseTo(predictedConsumptionOnlyMonth + 0.5 * DAYS_IN_PERIOD);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("never adds the standing charge to lastHourCostGbp, hourlyBuckets, or yesterdayTotalCostGbp", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:15:00Z", demand: 500, consumptionDelta: 1000 }],
+        pencePerKwh: 10,
+        standingChargePencePerDay: 50,
+      }),
+    );
+
+    const previousHourBuckets: HourBucketsState = {
+      buckets: [{ hourStart: "2026-01-14T10:00:00.000Z", kwhSoFar: 1, costGbpSoFar: 0.2 }],
+      lastReadingAt: "2026-01-15T09:30:00Z",
+    };
+
+    const laterNow = new Date("2026-01-15T11:05:00Z"); // the 10:00 hour is now complete
+    const { status } = await computeStatus(testEnv, null, null, previousHourBuckets, laterNow);
+
+    expect(status.lastHourCostGbp).toBeCloseTo(0.1); // 1 kWh @ 10p, no standing charge
+    const hourlyBucketsTotal = status.hourlyBuckets.reduce((sum, b) => sum + b.costGbp, 0);
+    expect(hourlyBucketsTotal).toBeCloseTo(0.1); // only the one bucket has data, no standing charge added anywhere
+    expect(status.yesterdayTotalCostGbp).toBeCloseTo(0.2); // carried through unchanged
+
+    vi.unstubAllGlobals();
+  });
+});
+
 describe("computeStatus nextAgileSlots", () => {
   function slot(pence: number, validFrom: string, validTo: string) {
     return {
@@ -863,6 +999,9 @@ describe("computeStatus nextAgileSlots", () => {
       }
       if (url.includes("/standard-unit-rates/")) {
         return jsonResponse({ count: opts.todayRates.length, next: null, previous: null, results: opts.todayRates });
+      }
+      if (url.includes("/standing-charges/")) {
+        return jsonResponse({ count: 0, next: null, previous: null, results: [] });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -1129,6 +1268,9 @@ describe("computeStatus month backfill", () => {
             { consumption: 5, interval_start: "2025-12-24T10:00:00Z", interval_end: "2025-12-24T10:30:00Z" },
           ],
         });
+      }
+      if (url.includes("/standing-charges/")) {
+        return jsonResponse({ count: 0, next: null, previous: null, results: [] });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });

@@ -48,10 +48,11 @@ Octopus REST API (unit rates)                ─┼─▶ Cloudflare Worker ─�
   Agile just because that's this project's most common use case).
 - The standing charge (the flat daily fee, in pence, charged regardless of
   usage) comes from the equivalent `/standing-charges/` endpoint on the same
-  product/tariff. It's added to today's and this month's totals (a full
-  day's charge per calendar day, since it accrues independently of
-  consumption) but never to the hourly figures — the last-hour stat and the
-  24-hour chart stay consumption-only.
+  product/tariff. It's added to every whole-day-or-longer total — today,
+  yesterday, this month, and their predicted figures (a full day's charge per
+  calendar day, since it accrues independently of consumption) — but never
+  to the hourly figures: the last-hour stat and the 24-hour chart stay
+  consumption-only.
 - A Cron Trigger runs every 5 minutes, pricing new telemetry against the rate
   in effect at the time and accumulating it into a "today" total that resets
   at local (Europe/London) midnight.
@@ -183,7 +184,9 @@ previous calendar day's entries out of the same hour-bucket data backing the
 24-hour chart, rather than being a separately-tracked total — so, like the
 chart, it fills in gradually (nothing to show until the feature's been
 running a full day) and simply undercounts any hour with a telemetry gap
-rather than failing. The month total is
+rather than failing, plus yesterday's own standing charge added in full
+regardless of how much of that consumption data is actually available. The
+month total is
 different: on a cold start (first run, KV loss, or a new billing period), the
 Worker backfills every already-completed day since `billingPeriodStart` from
 Octopus's historical consumption REST endpoint before continuing forward with

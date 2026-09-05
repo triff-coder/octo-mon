@@ -107,12 +107,14 @@ export interface StatusResponse {
   /** Today's consumption cost so far, plus a full day's standing charge (see fetchStandingChargeForDay) — the standing charge accrues once per calendar day regardless of usage, so it's added in full rather than prorated by how much of the day has elapsed. */
   todayTotalCostGbp: number;
   /**
-   * Total spend for the previous Europe/London calendar day, derived by
-   * summing `hourlyBuckets`' underlying per-hour totals for that date
-   * (not a separately-tracked accumulator) — so, like the chart, it fills
-   * in gradually and undercounts any hour with a telemetry gap rather than
-   * failing outright. Consumption cost only — unlike `todayTotalCostGbp`,
-   * this does not include a standing charge.
+   * Total spend for the previous Europe/London calendar day: consumption
+   * cost derived by summing `hourlyBuckets`' underlying per-hour totals for
+   * that date (not a separately-tracked accumulator, so like the chart it
+   * fills in gradually and undercounts any hour with a telemetry gap rather
+   * than failing outright), plus that day's own standing charge (see
+   * fetchStandingChargeForDay) — added in full regardless of how much
+   * consumption data is actually available for the day, same as
+   * `todayTotalCostGbp`.
    */
   yesterdayTotalKwh: number;
   yesterdayTotalCostGbp: number;

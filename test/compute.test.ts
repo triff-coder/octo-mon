@@ -927,7 +927,7 @@ describe("computeStatus standing charge", () => {
     vi.unstubAllGlobals();
   });
 
-  it("never adds the standing charge to lastHourCostGbp, hourlyBuckets, or yesterdayTotalCostGbp", async () => {
+  it("never adds the standing charge to lastHourCostGbp or hourlyBuckets", async () => {
     vi.stubGlobal(
       "fetch",
       mockOctopusApi({
@@ -948,7 +948,47 @@ describe("computeStatus standing charge", () => {
     expect(status.lastHourCostGbp).toBeCloseTo(0.1); // 1 kWh @ 10p, no standing charge
     const hourlyBucketsTotal = status.hourlyBuckets.reduce((sum, b) => sum + b.costGbp, 0);
     expect(hourlyBucketsTotal).toBeCloseTo(0.1); // only the one bucket has data, no standing charge added anywhere
-    expect(status.yesterdayTotalCostGbp).toBeCloseTo(0.2); // carried through unchanged
+
+    vi.unstubAllGlobals();
+  });
+
+  it("adds yesterday's own standing charge to yesterdayTotalCostGbp, in full regardless of data gaps", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:15:00Z", demand: 500, consumptionDelta: 1000 }],
+        pencePerKwh: 10,
+        standingChargePencePerDay: 50,
+      }),
+    );
+
+    const previousHourBuckets: HourBucketsState = {
+      buckets: [{ hourStart: "2026-01-14T10:00:00.000Z", kwhSoFar: 1, costGbpSoFar: 0.2 }],
+      lastReadingAt: "2026-01-15T09:30:00Z",
+    };
+
+    const { status } = await computeStatus(testEnv, null, null, previousHourBuckets, now);
+
+    // 0.2 consumption + 50p/day standing charge.
+    expect(status.yesterdayTotalCostGbp).toBeCloseTo(0.2 + 0.5);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("adds a full standing charge to yesterdayTotalCostGbp even when there's no hour-bucket data for that day", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockOctopusApi({
+        telemetry: [{ readAt: "2026-01-15T10:00:00Z", demand: 500, consumptionDelta: 1000 }],
+        pencePerKwh: 10,
+        standingChargePencePerDay: 50,
+      }),
+    );
+
+    const { status } = await computeStatus(testEnv, null, null, null, now);
+
+    expect(status.yesterdayTotalKwh).toBe(0);
+    expect(status.yesterdayTotalCostGbp).toBeCloseTo(0.5);
 
     vi.unstubAllGlobals();
   });

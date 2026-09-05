@@ -742,19 +742,24 @@ export async function computeStatus(
   const lastHourCostGbp = hourlyBuckets.at(-1)?.costGbp ?? 0;
   const lastHourKwh = hourlyBuckets.at(-1)?.kwh ?? 0;
   const nextAgileSlots = await resolveNextAgileSlots(env, jwt, todayRates, now);
-  const yesterdayTotal = sumHourBucketsForLondonDate(hourBuckets, addDaysToDateKey(todayKey, -1));
+  const yesterdayKey = addDaysToDateKey(todayKey, -1);
+  const yesterdayTotal = sumHourBucketsForLondonDate(hourBuckets, yesterdayKey);
 
   // The standing charge is a flat daily fee charged once per calendar day
   // regardless of consumption, so unlike everything above it can't be priced
   // per telemetry point -- it's folded in here instead of into the
   // accumulators (which stay consumption-only, since they also back the
-  // hourly/yesterday figures those must NOT include it). Today's rate is
-  // assumed to hold for every elapsed day of the billing period and for
-  // every day still to come: standing charges change far less often than
-  // unit rates, so this is a reasonable stand-in for fetching each day's own
-  // rate individually.
+  // hourly figures, which must NOT include it -- only whole-day totals do).
+  // Today's rate is assumed to hold for every elapsed day of the billing
+  // period and for every day still to come: standing charges change far
+  // less often than unit rates, so this is a reasonable stand-in for
+  // fetching each day's own rate individually (yesterday's own total below
+  // is the one exception, since its actual rate is already a single cheap
+  // cached lookup rather than a whole period's worth of them).
   const standingChargePenceToday = await fetchStandingChargeForDay(env, todayKey);
   const standingChargeGbpToday = standingChargePenceToday / 100;
+  const standingChargePenceYesterday = await fetchStandingChargeForDay(env, yesterdayKey);
+  const yesterdayTotalCostGbp = yesterdayTotal.costGbpSoFar + standingChargePenceYesterday / 100;
   const periodStartUtc = londonMidnightUtc(monthAccumulator.periodKey);
   const daysElapsedInPeriod = Math.round((londonMidnightUtc(todayKey).getTime() - periodStartUtc.getTime()) / 86_400_000) + 1;
   const totalDaysInPeriod = Math.round((nextBillingPeriodStartUtc(now).getTime() - periodStartUtc.getTime()) / 86_400_000);
@@ -779,7 +784,7 @@ export async function computeStatus(
     todayTotalKwh: accumulator.kwhSoFar,
     todayTotalCostGbp,
     yesterdayTotalKwh: yesterdayTotal.kwhSoFar,
-    yesterdayTotalCostGbp: yesterdayTotal.costGbpSoFar,
+    yesterdayTotalCostGbp,
     thisMonthTotalKwh: monthAccumulator.kwhSoFar,
     thisMonthTotalCostGbp,
     billingPeriodStart: monthAccumulator.periodKey,

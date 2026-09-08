@@ -38,11 +38,20 @@ const STATUS_SNAPSHOT_TTL_SECONDS = 30 * 60;
 const TODAY_ACCUMULATOR_KV_KEY = "today:accumulator";
 const MONTH_ACCUMULATOR_KV_KEY = "month:accumulator";
 const HOUR_BUCKETS_KV_KEY = "hours:buckets";
-// Retention needs to reach back far enough to compute a 7-day trailing
-// average for the *oldest* of the 24 charted hours (24h window + 7 * 24h of
-// history for that hour-of-day), plus a small buffer for the fact `now`
-// isn't exactly on an hour boundary.
-const HOUR_BUCKET_RETENTION_HOURS = 24 + 7 * 24 + 1;
+// Days of history GET /history serves -- see computeDailyHistory. Declared
+// here (ahead of its other uses further down) because HOUR_BUCKET_RETENTION_HOURS
+// needs it too.
+const DAILY_HISTORY_DAYS = 30;
+// Two callers need this retention to reach back far enough: the chart's
+// 7-day trailing average for the *oldest* of the 24 charted hours (24h
+// window + 7 * 24h of history for that hour-of-day), and
+// computeDailyHistoryFromHourBuckets's DAILY_HISTORY_DAYS-day fallback used
+// when Octopus's consumption REST endpoint won't serve anything at all for
+// this account (see there) -- without the second term, that fallback would
+// plateau at the chart's much shorter window instead of ever reaching the
+// full 30 days it's meant to. Whichever bound is larger wins, plus a small
+// buffer for the fact `now` isn't exactly on an hour/day boundary.
+const HOUR_BUCKET_RETENTION_HOURS = Math.max(24 + 7 * 24 + 1, DAILY_HISTORY_DAYS * 24 + 24 + 1);
 const HOUR_BUCKETS_TTL_SECONDS = (HOUR_BUCKET_RETENTION_HOURS + 6) * 60 * 60;
 // A cached snapshot older than this (roughly 3 missed 5-minute cron ticks)
 // is flagged stale rather than presented as current.
@@ -67,7 +76,6 @@ const DAILY_HISTORY_KV_KEY_PREFIX = "history:daily:";
 // Purely an upper bound now that the key is date-scoped: it just controls
 // how long an unused day's entry lingers in KV before expiring.
 const DAILY_HISTORY_TTL_SECONDS = 12 * 60 * 60;
-const DAILY_HISTORY_DAYS = 30;
 
 /** Finds the unit rate whose validity window contains `instant`. */
 export function findRateForInstant(rates: UnitRate[], instant: Date): UnitRate | null {
@@ -912,10 +920,11 @@ async function fetchHistoricalConsumptionNarrowing(
  * "yesterday" stat — rather than Octopus's REST consumption endpoint. Used
  * by computeDailyHistory as a fallback when that endpoint won't serve
  * anything usable at all (see there): this data is already sitting in KV
- * from the cron's live telemetry polling, so it can never 404 or lag, but
- * it only reaches back as far as HOUR_BUCKET_RETENTION_HOURS (currently
- * ~8 days) rather than the full 30 — real history the Worker has already
- * collected, just less of it.
+ * from the cron's live telemetry polling, so it can never 404 or lag.
+ * HOUR_BUCKET_RETENTION_HOURS is sized to reach back the full
+ * DAILY_HISTORY_DAYS for exactly this fallback, so it grows day by day up
+ * to the full 30 rather than plateauing early — it's simply capped at
+ * however much real history the Worker has actually collected so far.
  */
 async function computeDailyHistoryFromHourBuckets(
   env: Env,

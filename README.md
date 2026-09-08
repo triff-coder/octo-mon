@@ -261,12 +261,11 @@ MPAN/tariff config was only just corrected, even though live telemetry was
 already working fine — the Worker falls back to summing its own hour-bucket
 accumulator (the same cached-in-KV data backing the 24-hour chart and the
 "yesterday" stat) instead of failing the request. That data comes purely
-from the cron's live telemetry polling, so it can never 404 or lag, but it
-only reaches back a matter of days (bounded by how long hour buckets are
-retained, tuned for the chart's 7-day-average needs) rather than the full
-30 — real history the Worker has already collected, just less of it, and it
-grows a little further back each day the Worker keeps running. The response
-is cached in KV for 12 hours, since fully-past days never change and this
+from the cron's live telemetry polling, so it can never 404 or lag, and hour
+buckets are retained for the full 30 days this fallback needs, so it grows a
+little further back each day the Worker keeps running until it reaches the
+same full 30 days the REST-backed path would have returned. The response is
+cached in KV for 12 hours, since fully-past days never change and this
 doesn't need near-real-time freshness.
 
 Each day's total also includes that day's own standing charge. `GET

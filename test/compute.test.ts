@@ -363,10 +363,10 @@ describe("advanceHourBuckets", () => {
     expect(existing).toEqual(frozenCopy);
   });
 
-  it("ages out buckets older than the retention window (~8 days) instead of growing forever", () => {
+  it("ages out buckets older than the retention window (~31 days) instead of growing forever", () => {
     const existing: HourBucketsState = {
-      buckets: [{ hourStart: "2026-01-01T10:00:00.000Z", kwhSoFar: 5, costGbpSoFar: 1 }], // 14 days old
-      lastReadingAt: "2026-01-01T10:15:00Z",
+      buckets: [{ hourStart: "2025-12-10T10:00:00.000Z", kwhSoFar: 5, costGbpSoFar: 1 }], // 36 days old
+      lastReadingAt: "2025-12-10T10:15:00Z",
     };
 
     const state = advanceHourBuckets(
@@ -376,7 +376,7 @@ describe("advanceHourBuckets", () => {
       now,
     );
 
-    expect(state.buckets.find((b) => b.hourStart === "2026-01-01T10:00:00.000Z")).toBeUndefined();
+    expect(state.buckets.find((b) => b.hourStart === "2025-12-10T10:00:00.000Z")).toBeUndefined();
   });
 
   it("keeps a bucket from a week ago, since the weekly average needs it", () => {
@@ -393,6 +393,22 @@ describe("advanceHourBuckets", () => {
     );
 
     expect(state.buckets.find((b) => b.hourStart === "2026-01-08T10:00:00.000Z")).toBeDefined();
+  });
+
+  it("keeps a bucket from 29 days ago, since the /history hour-bucket fallback needs a full 30 days", () => {
+    const existing: HourBucketsState = {
+      buckets: [{ hourStart: "2025-12-17T10:00:00.000Z", kwhSoFar: 5, costGbpSoFar: 1 }], // 29 days old
+      lastReadingAt: "2025-12-17T10:15:00Z",
+    };
+
+    const state = advanceHourBuckets(
+      existing,
+      [{ readAt: "2026-01-15T10:15:00Z", consumptionDeltaKwh: 1 }],
+      ratesByDay,
+      now,
+    );
+
+    expect(state.buckets.find((b) => b.hourStart === "2025-12-17T10:00:00.000Z")).toBeDefined();
   });
 });
 

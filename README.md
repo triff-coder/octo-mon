@@ -341,8 +341,8 @@ npm test
    miniature next to the current-usage numbers, large full-width); small
    sticks to just current £/hr and today's total — there's no room for more.
 
-The widget shows current £/hr (colour-coded low/medium/high: green under
-20p, amber 20-30p, red 30p+) and today's running total on every size. Medium
+The widget shows current £/hr (colour-coded by that £/hr spend: green under
+£0.20/hr, amber £0.20-0.50/hr, red £0.50/hr+) and today's running total on every size. Medium
 and large widgets add last hour's, yesterday's, and this month's running
 total as extra columns, each with the equivalent kWh figure underneath, plus
 a 24-hour bar chart — medium fits a miniature version next to

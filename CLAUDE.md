@@ -33,6 +33,8 @@ Concretely: the medium mini chart in `buildHourlyChartImage` (JS,
 kept in step — same bar/mark logic, same hour-label interval, same
 overnight-hour bar shading (`isOvernightHour`) — resized for each surface's
 own dimensions rather than copy-pasted verbatim. Likewise `colorForRate`
-(the low/medium/high £/hr colour bands) is duplicated in both files and
-must stay numerically identical — change the thresholds in one, change them
-in the other.
+(the low/medium/high p/kWh unit-rate bands, used for upcoming-slot prices)
+and `colorForCostPerHour` (the low/medium/high £/hr bands, used for the
+headline current-cost figure) are duplicated in both files and must stay
+numerically identical — change the thresholds in one, change them in the
+other.

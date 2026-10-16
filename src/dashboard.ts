@@ -218,11 +218,19 @@ export function renderDashboardHtml(token: string): string {
     return Number(value).toFixed(2) + " kWh";
   }
 
-  // Low/medium/high cost bands -- mirrors scriptable/OctoMon.js's
-  // colorForRate exactly (see CLAUDE.md).
+  // Low/medium/high unit-rate (p/kWh) bands for the upcoming-slot prices --
+  // mirrors scriptable/OctoMon.js's colorForRate exactly (see CLAUDE.md).
   function colorForRate(pencePerKwh) {
     if (pencePerKwh < 20) return "#4CAF50"; // low
     if (pencePerKwh < 30) return "#FFA726"; // medium
+    return "#EF5350"; // high
+  }
+
+  // Low/medium/high bands for the current £/hr spend -- mirrors
+  // scriptable/OctoMon.js's colorForCostPerHour exactly (see CLAUDE.md).
+  function colorForCostPerHour(gbpPerHour) {
+    if (gbpPerHour < 0.2) return "#4CAF50"; // low
+    if (gbpPerHour < 0.5) return "#FFA726"; // medium
     return "#EF5350"; // high
   }
 
@@ -471,7 +479,7 @@ export function renderDashboardHtml(token: string): string {
 
   function render(status, stale) {
     currentCostEl.textContent = formatPounds(status.currentCostPerHourGbp) + "/hr";
-    currentCostEl.style.color = colorForRate(status.currentRate.pencePerKwh);
+    currentCostEl.style.color = colorForCostPerHour(status.currentCostPerHourGbp);
     currentDetailEl.textContent =
       Number(status.currentDemandKw).toFixed(2) + " kW @ " + formatPence(status.currentRate.pencePerKwh) + "/kWh";
 

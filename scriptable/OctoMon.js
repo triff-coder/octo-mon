@@ -209,10 +209,19 @@ function isBillingCycleEnd(dateKey) {
   return dateKey.slice(8, 10) === "19";
 }
 
-// Low/medium/high cost bands.
+// Low/medium/high unit-rate (p/kWh) bands, used for the upcoming-slot prices.
 function colorForRate(pencePerKwh) {
   if (pencePerKwh < 20) return new Color("#4CAF50"); // low
   if (pencePerKwh < 30) return new Color("#FFA726"); // medium
+  return new Color("#EF5350"); // high
+}
+
+// Low/medium/high bands for the current £/hr spend (demand x unit rate), so
+// the headline colour tracks how much is being used right now rather than
+// just the unit rate.
+function colorForCostPerHour(gbpPerHour) {
+  if (gbpPerHour < 0.2) return new Color("#4CAF50"); // low
+  if (gbpPerHour < 0.5) return new Color("#FFA726"); // medium
   return new Color("#EF5350"); // high
 }
 
@@ -406,7 +415,7 @@ function buildStatusWidget(status, stale, dashboardUrl, dailyHistory) {
   const addCurrentUsageLines = (container) => {
     const currentCostLine = container.addText(`${formatPounds(status.currentCostPerHourGbp)}/hr`);
     currentCostLine.font = Font.boldSystemFont(isLarge ? 26 : 22);
-    currentCostLine.textColor = colorForRate(status.currentRate.pencePerKwh);
+    currentCostLine.textColor = colorForCostPerHour(status.currentCostPerHourGbp);
 
     const detailLine = container.addText(
       `${status.currentDemandKw.toFixed(2)} kW @ ${formatPence(status.currentRate.pencePerKwh)}/kWh`,

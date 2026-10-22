@@ -203,10 +203,10 @@ function formatShortDate(dateKey) {
   });
 }
 
-// Octopus's billing cycle rolls over on the 20th of each month, so the 19th
+// Octopus's billing cycle rolls over on the 18th of each month, so the 17th
 // is always the last day of a cycle — mirrors the dashboard's own check.
 function isBillingCycleEnd(dateKey) {
-  return dateKey.slice(8, 10) === "19";
+  return dateKey.slice(8, 10) === "17";
 }
 
 // Low/medium/high unit-rate (p/kWh) bands, used for the upcoming-slot prices.
@@ -317,7 +317,7 @@ function buildHourlyChartImage(buckets, width, height, hourLabelInterval) {
 // on top of a bar, so (like buildHourlyChartImage above) the whole list is
 // drawn as one DrawContext image. A widget only has room for about a week,
 // so this shows the last 7 days rather than the dashboard's full 30; a thin
-// rule marks a billing-cycle boundary (the 19th -> 20th) falling within
+// rule marks a billing-cycle boundary (the 17th -> 18th) falling within
 // that window, mirroring the dashboard's "Billing cycle ends" divider.
 function buildDailyHistoryListImage(days, width) {
   const rowHeight = 15;

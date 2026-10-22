@@ -11,7 +11,7 @@ An iPhone home-screen widget (built with [Scriptable](https://scriptable.app/)) 
 - **Today's total**: running spend so far today, in £, including a full day's
   standing charge
 - **This month's total**: running spend since the start of the current Octopus
-  billing period (the 20th of each month), in £, including the standing
+  billing period (the 18th of each month), in £, including the standing
   charge for every elapsed day of the period
 - **24-hour chart** (medium and large widgets): a bar chart of spend per hour
   over the last 24 complete hours, with a small mark on each bar showing what
@@ -159,7 +159,7 @@ You should get back JSON like:
   "yesterdayTotalCostGbp": 4.21,
   "thisMonthTotalKwh": 187.4,
   "thisMonthTotalCostGbp": 41.92,
-  "billingPeriodStart": "2026-08-20",
+  "billingPeriodStart": "2026-08-18",
   "monthBackfillError": null,
   "lastHourCostGbp": 0.21,
   "lastHourKwh": 0.9,
@@ -176,8 +176,10 @@ You should get back JSON like:
 ```
 
 `thisMonthTotalKwh`/`thisMonthTotalCostGbp` track spend since `billingPeriodStart` —
-Octopus billing months run from the 20th of one calendar month to the 19th of
-the next, not the calendar month. `todayTotalKwh`/`todayTotalCostGbp` only ever
+Octopus billing months run from the 18th of one calendar month to the 17th of
+the next, not the calendar month (`BILLING_DAY` in `src/time.ts` — check it
+against the usage dates on your own bill, not the statement dates on its
+front page). `todayTotalKwh`/`todayTotalCostGbp` only ever
 cover today (built purely from live telemetry, no backfill).
 `yesterdayTotalKwh`/`yesterdayTotalCostGbp` are derived by summing the
 previous calendar day's entries out of the same hour-bucket data backing the
@@ -287,7 +289,7 @@ yesterday/this month, and the 24-hour chart with 7-day average marks and
 3-hourly time labels), plus a dashboard-only "LAST 30 DAYS" list below the
 chart — most recent day first, each with its £ and kWh and a bar sized to
 that day's cost relative to the rest of the list, and a "Billing cycle ends"
-divider between the 20th and 19th of each month (the API itself returns the
+divider between the 18th and 17th of each month (the API itself returns the
 days oldest first; the page reverses them for display). It's fetched once
 per page load from `GET /history` (not on the
 30-second poll loop, since 30 days of history doesn't need near-real-time

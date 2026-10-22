@@ -49,7 +49,7 @@ export interface TodayAccumulator {
 
 /**
  * The running "this billing month so far" accumulator stored in KV. Resets
- * on the Octopus billing cycle boundary (the 20th of each month) rather
+ * on the Octopus billing cycle boundary (the 18th of each month) rather
  * than at local midnight.
  */
 export interface MonthAccumulator {

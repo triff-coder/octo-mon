@@ -13,7 +13,6 @@ import {
   addDaysToDateKey,
   billingPeriodKey,
   hourStartUtc,
-  isSameBillingPeriod,
   isSameLondonDay,
   londonDateKey,
   londonMidnightUtc,
@@ -129,7 +128,7 @@ export function advanceTodayAccumulator(
 
 /**
  * Same accumulation logic as advanceTodayAccumulator, but keyed to the
- * Octopus billing period (resets on the 20th of each month) rather than the
+ * Octopus billing period (resets on the 18th of each month) rather than the
  * local calendar day.
  */
 export function advanceMonthAccumulator(
@@ -141,7 +140,7 @@ export function advanceMonthAccumulator(
   const periodKey = billingPeriodKey(now);
 
   const acc: MonthAccumulator =
-    accumulator && isSameBillingPeriod(new Date(accumulator.lastReadingAt), now)
+    accumulator && accumulator.periodKey === periodKey
       ? { ...accumulator, dailyCostsGbp: { ...(accumulator.dailyCostsGbp ?? {}) } }
       : {
           periodKey,
@@ -580,10 +579,11 @@ async function resolveMonthAccumulator(
   previousHourBuckets: HourBucketsState | null,
   now: Date,
 ): Promise<ResolvedMonthAccumulator> {
-  if (
-    previousMonthAccumulator &&
-    isSameBillingPeriod(new Date(previousMonthAccumulator.lastReadingAt), now)
-  ) {
+  // Compared by periodKey rather than by whether lastReadingAt falls in the
+  // current period, so an accumulator saved under a different BILLING_DAY
+  // is rebuilt for the new period instead of carried forward with the old
+  // period's start date.
+  if (previousMonthAccumulator && previousMonthAccumulator.periodKey === billingPeriodKey(now)) {
     const accumulator = previousMonthAccumulator.dailyCostsGbp
       ? previousMonthAccumulator
       : {

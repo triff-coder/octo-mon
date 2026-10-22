@@ -366,12 +366,13 @@ export function renderDashboardHtml(token: string): string {
     }
   }
 
-  // Octopus's billing cycle rolls over on the 20th of each month, so the
-  // 19th is always the last day of a cycle -- draw a divider right before
-  // it (the list renders newest first, so walking down through the 20th
-  // and on to the 19th is exactly where a cycle boundary is crossed).
+  // Octopus's billing cycle rolls over on the 18th of each month (see
+  // BILLING_DAY in time.ts), so the 17th is always the last day of a cycle
+  // -- draw a divider right before it (the list renders newest first, so
+  // walking down through the 18th and on to the 17th is exactly where a
+  // cycle boundary is crossed).
   function isBillingCycleEnd(dateKey) {
-    return dateKey.slice(8, 10) === "19";
+    return dateKey.slice(8, 10) === "17";
   }
 
   function renderHistory(days) {

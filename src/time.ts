@@ -96,11 +96,20 @@ export function nextLondonMidnightUtc(instant: Date): Date {
 }
 
 /**
+ * Day of the month the account's Octopus billing period starts on. Checked
+ * against the account's own bills: each bill charges usage from the 18th of
+ * one month to the 17th of the next (the "Your energy account" dates on a
+ * bill's front page are the statement dates, a few days later, not the
+ * usage period).
+ */
+export const BILLING_DAY = 18;
+
+/**
  * The Europe/London date key (YYYY-MM-DD) for the start of the Octopus
  * billing period containing `instant`. Billing months run from
  * `billingDay` of one calendar month to `billingDay - 1` of the next.
  */
-export function billingPeriodKey(instant: Date, billingDay = 20): string {
+export function billingPeriodKey(instant: Date, billingDay = BILLING_DAY): string {
   const [y, m, d] = londonDateKey(instant).split("-").map(Number) as [number, number, number];
   if (d >= billingDay) {
     return `${y}-${String(m).padStart(2, "0")}-${String(billingDay).padStart(2, "0")}`;
@@ -111,7 +120,7 @@ export function billingPeriodKey(instant: Date, billingDay = 20): string {
 }
 
 /** Whether two instants fall in the same Octopus billing period (see billingPeriodKey). */
-export function isSameBillingPeriod(a: Date, b: Date, billingDay = 20): boolean {
+export function isSameBillingPeriod(a: Date, b: Date, billingDay = BILLING_DAY): boolean {
   return billingPeriodKey(a, billingDay) === billingPeriodKey(b, billingDay);
 }
 
@@ -120,7 +129,7 @@ export function isSameBillingPeriod(a: Date, b: Date, billingDay = 20): boolean 
  * (i.e. the start, in Europe/London local time, of the following billing
  * period). Used to size KV expiry for the monthly accumulator.
  */
-export function nextBillingPeriodStartUtc(instant: Date, billingDay = 20): Date {
+export function nextBillingPeriodStartUtc(instant: Date, billingDay = BILLING_DAY): Date {
   const [y, m] = billingPeriodKey(instant, billingDay).split("-").map(Number) as [number, number, number];
   const nextMonth = m === 12 ? 1 : m + 1;
   const nextYear = m === 12 ? y + 1 : y;

@@ -232,8 +232,11 @@ counted at the published rate (e.g. last night's charge, once Kraken reports
 it as completed), it refetches that slot's telemetry and subtracts the
 difference from the stored totals. Slots are kept in KV (`dispatch:slots`)
 for 40 days, since Kraken only reports recent dispatches. Bump charges
-(dispatch source `bump-charge`) stay at the normal rate. If Kraken won't say
-what caused a dispatch, it's treated as a smart charge. Any daily cap Octopus
+stay at the normal rate: only dispatches with source `smart-charge` are
+priced cheap. Kraken reports bump charges as `unknown` as well as
+`bump-charge`, so anything other than `smart-charge` counts as full price.
+If Kraken rejects the request for the source altogether, every dispatch is
+treated as a smart charge. Any daily cap Octopus
 puts on cheap dispatch hours isn't modelled.
 
 #### Cheap-slot notifications

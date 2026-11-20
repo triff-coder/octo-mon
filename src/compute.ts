@@ -1,4 +1,6 @@
 import { getJson, putJson } from "./cache";
+import { notifyNewBonusSlots } from "./notify";
+import type { BonusSlot } from "./notify";
 import { isOffPeakDispatch, overlayCheapSlots, SLOT_MS, slotKeysForDispatch } from "./dispatch";
 import {
   fetchCompletedDispatches,
@@ -673,6 +675,36 @@ function resolveNextAgileSlots(dispatches: DispatchWindow[], todayRates: UnitRat
   return slots;
 }
 
+/**
+ * Upcoming (or in-progress) half-hour slots in planned off-peak dispatches
+ * that would otherwise be charged above the off-peak rate — i.e. the extra
+ * cheap slots worth telling someone about, not the overnight window that's
+ * cheap anyway.
+ */
+async function resolveBonusSlots(env: Env, dispatches: DispatchWindow[], now: Date): Promise<BonusSlot[]> {
+  const result: BonusSlot[] = [];
+  const seen = new Set<string>();
+  for (const dispatch of dispatches) {
+    for (const key of slotKeysForDispatch(dispatch)) {
+      const startMs = new Date(key).getTime();
+      if (seen.has(key) || startMs + SLOT_MS <= now.getTime()) continue;
+      seen.add(key);
+      const rates = await fetchUnitRatesForDay(env, londonDateKey(new Date(key)));
+      const published = findRateForInstant(rates, new Date(key));
+      if (!published) continue;
+      const offPeak = Math.min(...rates.map((r) => r.pencePerKwh));
+      if (published.pencePerKwh <= offPeak) continue;
+      result.push({
+        validFrom: key,
+        validTo: new Date(startMs + SLOT_MS).toISOString(),
+        pencePerKwh: offPeak,
+        normalPencePerKwh: published.pencePerKwh,
+      });
+    }
+  }
+  return result;
+}
+
 async function loadDispatchSlots(env: Env): Promise<string[]> {
   return (await getJson<DispatchSlotsState>(env.OCTOMON_KV, DISPATCH_SLOTS_KV_KEY))?.slots ?? [];
 }
@@ -698,16 +730,27 @@ async function resolveDispatchSlots(env: Env, jwt: string, now: Date): Promise<R
 
   let planned: DispatchWindow[] = [];
   let completed: DispatchWindow[] = [];
+  let plannedFailed = false;
+  let completedFailed = false;
   try {
     planned = await fetchPlannedDispatches(env, jwt);
-  } catch {
-    // keep going with what's stored
+  } catch (error) {
+    plannedFailed = true;
+    console.error("octo-mon plannedDispatches failed, using stored slots only:", error);
   }
   try {
     completed = await fetchCompletedDispatches(env, jwt);
-  } catch {
-    // keep going with what's stored
+  } catch (error) {
+    completedFailed = true;
+    console.error("octo-mon completedDispatches failed, using stored slots only:", error);
   }
+  // One line per tick, so it's visible in the Worker's logs whether Kraken
+  // is reporting dispatches at all and what it says caused them.
+  const describe = (list: DispatchWindow[], failed: boolean) =>
+    failed ? "failed" : JSON.stringify(list.map((d) => `${d.start}..${d.end} ${d.source ?? "?"}`));
+  console.log(
+    `octo-mon dispatches: planned=${describe(planned, plannedFailed)} completed=${describe(completed, completedFailed)} stored=${known.size}`,
+  );
 
   const plannedOffPeak = planned.filter(isOffPeakDispatch);
   const discovered = new Set<string>();
@@ -847,6 +890,8 @@ export interface ComputedStatus {
   dispatchSlots: string[];
   /** London dates before today whose totals a dispatch correction changed, so cached /history is out of date. */
   correctedPastDayKeys: string[];
+  /** Upcoming dispatch slots cheaper than they'd normally be, for push notifications. */
+  bonusSlots: BonusSlot[];
 }
 
 /**
@@ -1018,6 +1063,7 @@ export async function computeStatus(
     hourBuckets,
     dispatchSlots: [...cheapSlots].filter((k) => new Date(k).getTime() <= now.getTime()).sort(),
     correctedPastDayKeys: [...correction.correctedDayKeys].filter((k) => k < todayKey).sort(),
+    bonusSlots: await resolveBonusSlots(env, dispatchSlots.plannedOffPeak, now),
   };
 }
 
@@ -1043,6 +1089,11 @@ export async function persistComputedStatus(env: Env, computed: ComputedStatus, 
     // Cached /history totals for those days were priced before the
     // dispatch was known about.
     await env.OCTOMON_KV.delete(DAILY_HISTORY_KV_KEY_PREFIX + londonDateKey(now));
+  }
+  try {
+    await notifyNewBonusSlots(env, computed.bonusSlots, now);
+  } catch (error) {
+    console.error("octo-mon cheap-slot notification failed, retrying next tick:", error);
   }
 }
 

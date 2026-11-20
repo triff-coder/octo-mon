@@ -10,6 +10,8 @@ export interface Env {
   OCTOPUS_METER_SERIAL: string;
   OCTOPUS_DEVICE_ID: string;
   WIDGET_SHARED_SECRET: string;
+  /** Optional ntfy topic for "cheap slot announced" push notifications (see src/notify.ts). Unset = no notifications. */
+  NTFY_TOPIC?: string;
 }
 
 /** A single published unit rate for a validity window (from Octopus's standard-unit-rates endpoint — any tariff, not just Agile). */

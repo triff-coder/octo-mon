@@ -128,6 +128,7 @@ npx wrangler secret put OCTOPUS_MPAN
 npx wrangler secret put OCTOPUS_METER_SERIAL
 npx wrangler secret put OCTOPUS_DEVICE_ID
 npx wrangler secret put WIDGET_SHARED_SECRET   # make up a long random string
+npx wrangler secret put NTFY_TOPIC             # optional: cheap-slot push notifications (see below)
 ```
 
 Deploy:
@@ -234,6 +235,26 @@ for 40 days, since Kraken only reports recent dispatches. Bump charges
 (dispatch source `bump-charge`) stay at the normal rate. If Kraken won't say
 what caused a dispatch, it's treated as a smart charge. Any daily cap Octopus
 puts on cheap dispatch hours isn't modelled.
+
+#### Cheap-slot notifications
+
+The Worker can send an iPhone notification when Octopus schedules a
+cheap charging slot outside the normal off-peak window, e.g. "20:00–21:30
+at 7.0p/kWh (normally 34.7p)". Slots inside the usual overnight window
+aren't announced because they're cheap anyway, and neither are bump
+charges. Each slot is announced once, and an extended dispatch announces
+only its new slots.
+
+Notifications go through [ntfy](https://ntfy.sh), a free push service that
+needs no account:
+
+1. Install the **ntfy** app from the App Store.
+2. Make up a long random topic name. Anyone who knows it can read and
+   post to it, so treat it like a password.
+3. Run `npx wrangler secret put NTFY_TOPIC` and enter it.
+4. In the ntfy app, tap **+** and subscribe to that topic on `ntfy.sh`.
+
+With no `NTFY_TOPIC` set, nothing is sent.
 
 If it's the very first request, the Worker computes live (a bit slower); after
 that, the 5-minute cron keeps a warm snapshot so requests are fast.

@@ -2165,6 +2165,28 @@ describe("smart-charging dispatches priced at the off-peak rate", () => {
     vi.unstubAllGlobals();
   });
 
+  it("lists upcoming dispatch slots that beat the normal rate for notifications, but not overnight ones", async () => {
+    vi.stubGlobal(
+      "fetch",
+      dispatchStub({
+        planned: [
+          { startDt: "2026-01-20 18:00:00+00:00", endDt: "2026-01-20 19:00:00+00:00", meta: { source: "smart-charge" } },
+          { startDt: "2026-01-21 01:00:00+00:00", endDt: "2026-01-21 02:00:00+00:00", meta: { source: "smart-charge" } },
+        ],
+        telemetry: () => [],
+      }),
+    );
+
+    const { bonusSlots } = await computeStatus(testEnv, null, null, null, now);
+
+    expect(bonusSlots).toEqual([
+      { validFrom: "2026-01-20T18:00:00.000Z", validTo: "2026-01-20T18:30:00.000Z", pencePerKwh: 7, normalPencePerKwh: 28 },
+      { validFrom: "2026-01-20T18:30:00.000Z", validTo: "2026-01-20T19:00:00.000Z", pencePerKwh: 7, normalPencePerKwh: 28 },
+    ]);
+
+    vi.unstubAllGlobals();
+  });
+
   it("leaves bump charges at the normal rate", async () => {
     vi.stubGlobal(
       "fetch",

@@ -1,5 +1,7 @@
 import { getJson, putJson } from "./cache";
+import { isOffPeakDispatch, overlayCheapSlots, SLOT_MS, slotKeysForDispatch } from "./dispatch";
 import {
+  fetchCompletedDispatches,
   fetchHistoricalConsumption,
   fetchPlannedDispatches,
   fetchStandingChargeForDay,
@@ -75,6 +77,23 @@ const DAILY_HISTORY_KV_KEY_PREFIX = "history:daily:";
 // Purely an upper bound now that the key is date-scoped: it just controls
 // how long an unused day's entry lingers in KV before expiring.
 const DAILY_HISTORY_TTL_SECONDS = 12 * 60 * 60;
+// Half-hour slots Octopus has billed (or is billing) at the off-peak rate
+// because of a smart-charging dispatch — see src/dispatch.ts. Kraken only
+// reports recent dispatches, so slots are kept here for as long as anything
+// priced from them can still be recomputed: the billing period, /history's
+// 30 days, and the hour buckets. Only slots that have already started are
+// stored, so a planned dispatch that's later cancelled never sticks.
+const DISPATCH_SLOTS_KV_KEY = "dispatch:slots";
+const DISPATCH_SLOT_RETENTION_MS = 40 * 86_400_000;
+// Most slots re-priced per tick (24 hours' worth). Anything beyond this is
+// left for the next tick rather than making one tick do unbounded work.
+const MAX_DISPATCH_CORRECTION_SLOTS = 48;
+// Longest telemetry window fetched per correction request.
+const MAX_CORRECTION_FETCH_SLOTS = 12;
+
+interface DispatchSlotsState {
+  slots: string[];
+}
 
 /** Finds the unit rate whose validity window contains `instant`. */
 export function findRateForInstant(rates: UnitRate[], instant: Date): UnitRate | null {
@@ -454,7 +473,11 @@ async function fetchHistoricalConsumptionFromEarliestAvailable(
  * without any network call when the billing period started today (nothing
  * to backfill).
  */
-async function backfillMonthAccumulator(env: Env, now: Date): Promise<MonthAccumulator> {
+async function backfillMonthAccumulator(
+  env: Env,
+  now: Date,
+  cheapSlots: ReadonlySet<string>,
+): Promise<MonthAccumulator> {
   const periodKey = billingPeriodKey(now);
   const todayKey = londonDateKey(now);
   const periodStart = londonMidnightUtc(periodKey);
@@ -483,7 +506,7 @@ async function backfillMonthAccumulator(env: Env, now: Date): Promise<MonthAccum
 
     let rates = ratesCache.get(dayKey);
     if (!rates) {
-      rates = await fetchUnitRatesForDay(env, dayKey);
+      rates = overlayCheapSlots(await fetchUnitRatesForDay(env, dayKey), cheapSlots);
       ratesCache.set(dayKey, rates);
     }
 
@@ -578,6 +601,7 @@ async function resolveMonthAccumulator(
   previousMonthAccumulator: MonthAccumulator | null,
   previousHourBuckets: HourBucketsState | null,
   now: Date,
+  cheapSlots: ReadonlySet<string>,
 ): Promise<ResolvedMonthAccumulator> {
   // Compared by periodKey rather than by whether lastReadingAt falls in the
   // current period, so an accumulator saved under a different BILLING_DAY
@@ -593,7 +617,7 @@ async function resolveMonthAccumulator(
     return { accumulator, backfillError: null };
   }
   try {
-    const accumulator = await backfillMonthAccumulator(env, now);
+    const accumulator = await backfillMonthAccumulator(env, now, cheapSlots);
     return { accumulator, backfillError: null };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -615,25 +639,13 @@ async function resolveMonthAccumulator(
  * The next few upcoming "smart charging" dispatch slots, earliest first,
  * chopped into 30-minute display windows and priced at the tariff's
  * off-peak rate (the cheapest rate published today). These are the
- * *occasional* windows Octopus grants outside (or extending) a tariff's
- * normal off-peak schedule — e.g. Intelligent Octopus Go's "bump charge"
- * boosts — not the everyday scheduled off-peak window itself, so this is
- * empty most of the time rather than always showing something. An account
- * without any dispatches configured (or a fetch failure) also just
- * produces an empty list rather than failing the whole request.
+ * *occasional* windows Octopus schedules outside (or extending) a tariff's
+ * normal off-peak schedule — not the everyday scheduled off-peak window
+ * itself, so this is empty most of the time rather than always showing
+ * something. Only dispatches billed at the off-peak rate are passed in (see
+ * isOffPeakDispatch), so bump charges never show up as cheap.
  */
-async function resolveNextAgileSlots(
-  env: Env,
-  jwt: string,
-  todayRates: UnitRate[],
-  now: Date,
-): Promise<UnitRate[]> {
-  let dispatches: DispatchWindow[];
-  try {
-    dispatches = await fetchPlannedDispatches(env, jwt);
-  } catch {
-    return [];
-  }
+function resolveNextAgileSlots(dispatches: DispatchWindow[], todayRates: UnitRate[], now: Date): UnitRate[] {
   if (dispatches.length === 0 || todayRates.length === 0) return [];
 
   const offPeakRate = Math.min(...todayRates.map((r) => r.pencePerKwh));
@@ -661,11 +673,180 @@ async function resolveNextAgileSlots(
   return slots;
 }
 
+async function loadDispatchSlots(env: Env): Promise<string[]> {
+  return (await getJson<DispatchSlotsState>(env.OCTOMON_KV, DISPATCH_SLOTS_KV_KEY))?.slots ?? [];
+}
+
+interface ResolvedDispatchSlots {
+  /** Slots already accounted for by the stored accumulators, from KV. */
+  known: Set<string>;
+  /** Off-peak slots learned this tick that aren't in `known`, oldest first. */
+  discovered: string[];
+  /** Upcoming/in-progress off-peak dispatches, for nextAgileSlots. */
+  plannedOffPeak: DispatchWindow[];
+}
+
+/**
+ * Fetches planned and completed dispatches and works out which off-peak
+ * slots are new since the last tick. A fetch failure just means nothing new
+ * is learned this tick — the stored slots still apply, and anything missed
+ * is picked up (and corrected for) once Kraken answers again.
+ */
+async function resolveDispatchSlots(env: Env, jwt: string, now: Date): Promise<ResolvedDispatchSlots> {
+  const cutoffMs = now.getTime() - DISPATCH_SLOT_RETENTION_MS;
+  const known = new Set((await loadDispatchSlots(env)).filter((k) => new Date(k).getTime() >= cutoffMs));
+
+  let planned: DispatchWindow[] = [];
+  let completed: DispatchWindow[] = [];
+  try {
+    planned = await fetchPlannedDispatches(env, jwt);
+  } catch {
+    // keep going with what's stored
+  }
+  try {
+    completed = await fetchCompletedDispatches(env, jwt);
+  } catch {
+    // keep going with what's stored
+  }
+
+  const plannedOffPeak = planned.filter(isOffPeakDispatch);
+  const discovered = new Set<string>();
+  for (const dispatch of [...completed.filter(isOffPeakDispatch), ...plannedOffPeak]) {
+    for (const key of slotKeysForDispatch(dispatch)) {
+      if (!known.has(key) && new Date(key).getTime() >= cutoffMs) discovered.add(key);
+    }
+  }
+
+  return { known, discovered: [...discovered].sort(), plannedOffPeak };
+}
+
+interface PricedStates {
+  accumulator: TodayAccumulator | null;
+  monthAccumulator: MonthAccumulator | null;
+  hourBuckets: HourBucketsState | null;
+}
+
+/**
+ * Re-prices readings the stored accumulators already counted at the
+ * published rate but which fall in a newly learned off-peak dispatch slot —
+ * e.g. last night's car charge, once Kraken reports it as completed, or the
+ * first few minutes of a dispatch before it showed up as planned. Refetches
+ * that slot's telemetry and subtracts the difference between the published
+ * and off-peak rate from whichever of today/month/hour totals included it.
+ *
+ * Returns the corrected states and the slots it handled. Slots it couldn't
+ * handle this tick (over the per-tick cap, or a telemetry fetch failed) are
+ * left out, so they aren't used for pricing yet and are retried next tick —
+ * otherwise readings priced cheap now would be "corrected" twice later.
+ */
+async function correctForDiscoveredSlots(
+  env: Env,
+  jwt: string,
+  discovered: string[],
+  states: PricedStates,
+): Promise<{ states: PricedStates; handled: string[]; correctedDayKeys: Set<string> }> {
+  const accumulator = states.accumulator ? { ...states.accumulator } : null;
+  const monthAccumulator = states.monthAccumulator
+    ? {
+        ...states.monthAccumulator,
+        // Left missing if it was missing, so resolveMonthAccumulator still
+        // rebuilds it for an accumulator saved before the field existed.
+        ...(states.monthAccumulator.dailyCostsGbp && { dailyCostsGbp: { ...states.monthAccumulator.dailyCostsGbp } }),
+      }
+    : null;
+  const hourBuckets = states.hourBuckets
+    ? { ...states.hourBuckets, buckets: states.hourBuckets.buckets.map((b) => ({ ...b })) }
+    : null;
+  const correctedDayKeys = new Set<string>();
+
+  const pricedThroughMs = Math.max(
+    ...[accumulator, monthAccumulator, hourBuckets].map((st) => (st ? new Date(st.lastReadingAt).getTime() : 0)),
+  );
+
+  // Slots nothing has been priced in yet need no correction.
+  const handled = discovered.filter((k) => new Date(k).getTime() >= pricedThroughMs);
+  const toCorrect = discovered
+    .filter((k) => new Date(k).getTime() < pricedThroughMs)
+    .slice(0, MAX_DISPATCH_CORRECTION_SLOTS);
+
+  // Group into runs of consecutive slots so each run is one telemetry fetch.
+  const runs: string[][] = [];
+  for (const key of toCorrect) {
+    const run = runs.at(-1);
+    const prevMs = run ? new Date(run.at(-1)!).getTime() : NaN;
+    if (run && run.length < MAX_CORRECTION_FETCH_SLOTS && new Date(key).getTime() === prevMs + SLOT_MS) {
+      run.push(key);
+    } else {
+      runs.push([key]);
+    }
+  }
+
+  const periodStartMs = monthAccumulator ? londonMidnightUtc(monthAccumulator.periodKey).getTime() : 0;
+  const ratesCache = new Map<string, UnitRate[]>();
+
+  for (const run of runs) {
+    const runStart = new Date(run[0]!);
+    const runEnd = new Date(new Date(run.at(-1)!).getTime() + SLOT_MS);
+    let points;
+    try {
+      points = await fetchTelemetry(env, jwt, runStart, runEnd);
+    } catch (error) {
+      console.error("octo-mon: couldn't refetch telemetry for a dispatch slot, retrying next tick:", error);
+      break;
+    }
+
+    for (const point of points) {
+      const pointDate = new Date(point.readAt);
+      const pointMs = pointDate.getTime();
+      if (pointMs < runStart.getTime() || pointMs >= runEnd.getTime()) continue;
+
+      const dayKey = londonDateKey(pointDate);
+      let rates = ratesCache.get(dayKey);
+      if (!rates) {
+        rates = await fetchUnitRatesForDay(env, dayKey);
+        ratesCache.set(dayKey, rates);
+      }
+      const published = findRateForInstant(rates, pointDate);
+      if (!published) continue;
+      const savingGbp =
+        (point.consumptionDeltaKwh * (published.pencePerKwh - Math.min(...rates.map((r) => r.pencePerKwh)))) / 100;
+      if (savingGbp <= 0) continue;
+
+      if (accumulator && accumulator.dateKey === dayKey && pointMs <= new Date(accumulator.lastReadingAt).getTime()) {
+        accumulator.costGbpSoFar = Math.max(0, accumulator.costGbpSoFar - savingGbp);
+      }
+      if (
+        monthAccumulator &&
+        pointMs >= periodStartMs &&
+        pointMs <= new Date(monthAccumulator.lastReadingAt).getTime()
+      ) {
+        monthAccumulator.costGbpSoFar = Math.max(0, monthAccumulator.costGbpSoFar - savingGbp);
+        if (monthAccumulator.dailyCostsGbp?.[dayKey] !== undefined) {
+          monthAccumulator.dailyCostsGbp[dayKey] = Math.max(0, monthAccumulator.dailyCostsGbp[dayKey]! - savingGbp);
+        }
+      }
+      if (hourBuckets && pointMs <= new Date(hourBuckets.lastReadingAt).getTime()) {
+        const bucket = hourBuckets.buckets.find((b) => b.hourStart === hourStartUtc(pointDate).toISOString());
+        if (bucket) bucket.costGbpSoFar = Math.max(0, bucket.costGbpSoFar - savingGbp);
+      }
+      correctedDayKeys.add(dayKey);
+    }
+
+    handled.push(...run);
+  }
+
+  return { states: { accumulator, monthAccumulator, hourBuckets }, handled, correctedDayKeys };
+}
+
 export interface ComputedStatus {
   status: StatusResponse;
   accumulator: TodayAccumulator;
   monthAccumulator: MonthAccumulator;
   hourBuckets: HourBucketsState;
+  /** Off-peak dispatch slots the accumulators above are now priced with (already-started ones only). */
+  dispatchSlots: string[];
+  /** London dates before today whose totals a dispatch correction changed, so cached /history is out of date. */
+  correctedPastDayKeys: string[];
 }
 
 /**
@@ -685,7 +866,27 @@ export async function computeStatus(
   const jwt = await obtainKrakenJwt(env, now);
 
   const todayKey = londonDateKey(now);
-  const todayRates = await fetchUnitRatesForDay(env, todayKey);
+  const publishedTodayRates = await fetchUnitRatesForDay(env, todayKey);
+
+  // Smart-charging dispatches are billed at the off-peak rate even outside
+  // the tariff's normal off-peak hours. Correct anything already counted at
+  // the published rate in a newly learned dispatch slot, then price
+  // everything from here on with those slots laid over the published rates.
+  const dispatchSlots = await resolveDispatchSlots(env, jwt, now);
+  const correction = await correctForDiscoveredSlots(env, jwt, dispatchSlots.discovered, {
+    accumulator: previousAccumulator,
+    monthAccumulator: previousMonthAccumulator,
+    hourBuckets: previousHourBuckets,
+  });
+  previousAccumulator = correction.states.accumulator;
+  previousMonthAccumulator = correction.states.monthAccumulator;
+  previousHourBuckets = correction.states.hourBuckets;
+  // `handled` includes upcoming planned slots too: they price readings
+  // straight away but are only stored once they've started (see the
+  // returned dispatchSlots), in case the dispatch is cancelled.
+  const cheapSlots = new Set([...dispatchSlots.known, ...correction.handled]);
+
+  const todayRates = overlayCheapSlots(publishedTodayRates, cheapSlots);
   const ratesByDay = new Map<string, UnitRate[]>([[todayKey, todayRates]]);
 
   const { accumulator: resolvedMonthAccumulator, backfillError } = await resolveMonthAccumulator(
@@ -693,6 +894,7 @@ export async function computeStatus(
     previousMonthAccumulator,
     previousHourBuckets,
     now,
+    cheapSlots,
   );
 
   // The accumulator resets for a new day (see advanceTodayAccumulator), so
@@ -749,7 +951,7 @@ export async function computeStatus(
   const hourlyBuckets = buildHourlyBuckets(hourBuckets, now);
   const lastHourCostGbp = hourlyBuckets.at(-1)?.costGbp ?? 0;
   const lastHourKwh = hourlyBuckets.at(-1)?.kwh ?? 0;
-  const nextAgileSlots = await resolveNextAgileSlots(env, jwt, todayRates, now);
+  const nextAgileSlots = resolveNextAgileSlots(dispatchSlots.plannedOffPeak, publishedTodayRates, now);
   const yesterdayKey = addDaysToDateKey(todayKey, -1);
   const yesterdayTotal = sumHourBucketsForLondonDate(hourBuckets, yesterdayKey);
 
@@ -809,7 +1011,14 @@ export async function computeStatus(
     snapshotAgeSeconds: 0,
   };
 
-  return { status, accumulator, monthAccumulator, hourBuckets };
+  return {
+    status,
+    accumulator,
+    monthAccumulator,
+    hourBuckets,
+    dispatchSlots: [...cheapSlots].filter((k) => new Date(k).getTime() <= now.getTime()).sort(),
+    correctedPastDayKeys: [...correction.correctedDayKeys].filter((k) => k < todayKey).sort(),
+  };
 }
 
 /** Writes a freshly computed status + accumulators to KV. */
@@ -826,6 +1035,15 @@ export async function persistComputedStatus(env: Env, computed: ComputedStatus, 
   await putJson(env.OCTOMON_KV, HOUR_BUCKETS_KV_KEY, computed.hourBuckets, {
     expirationTtl: HOUR_BUCKETS_TTL_SECONDS,
   });
+  const dispatchState: DispatchSlotsState = { slots: computed.dispatchSlots };
+  await putJson(env.OCTOMON_KV, DISPATCH_SLOTS_KV_KEY, dispatchState, {
+    expirationTtl: DISPATCH_SLOT_RETENTION_MS / 1000,
+  });
+  if (computed.correctedPastDayKeys.length > 0) {
+    // Cached /history totals for those days were priced before the
+    // dispatch was known about.
+    await env.OCTOMON_KV.delete(DAILY_HISTORY_KV_KEY_PREFIX + londonDateKey(now));
+  }
 }
 
 export async function loadTodayAccumulator(env: Env): Promise<TodayAccumulator | null> {
@@ -998,6 +1216,7 @@ export async function computeDailyHistory(
   const ratesCache = new Map<string, UnitRate[]>();
   const totalsByDay = new Map<string, { kwh: number; costGbp: number }>();
   const daysWithData = new Set<string>();
+  const cheapSlots = new Set(await loadDispatchSlots(env));
 
   for (const interval of intervals) {
     const intervalStart = new Date(interval.intervalStart);
@@ -1006,7 +1225,7 @@ export async function computeDailyHistory(
 
     let rates = ratesCache.get(dayKey);
     if (!rates) {
-      rates = await fetchUnitRatesForDay(env, dayKey);
+      rates = overlayCheapSlots(await fetchUnitRatesForDay(env, dayKey), cheapSlots);
       ratesCache.set(dayKey, rates);
     }
 

@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  fetchCompletedDispatches,
   fetchHistoricalConsumption,
   fetchPlannedDispatches,
   fetchStandingChargeForDay,
@@ -344,5 +345,46 @@ describe("fetchHistoricalConsumption", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(intervals).toHaveLength(3);
+  });
+});
+
+describe("fetchCompletedDispatches", () => {
+  it("returns each dispatch's source so bump charges can be told apart", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          data: {
+            completedDispatches: [
+              { startDt: "2026-08-22 22:00:00+00:00", endDt: "2026-08-22 23:00:00+00:00", meta: { source: "smart-charge" } },
+              { startDt: "2026-08-22 17:00:00+00:00", endDt: "2026-08-22 17:30:00+00:00", meta: { source: "bump-charge" } },
+            ],
+          },
+        }),
+      ),
+    );
+
+    expect(await fetchCompletedDispatches(testEnv, "jwt-1")).toEqual([
+      { start: "2026-08-22T17:00:00+00:00", end: "2026-08-22T17:30:00+00:00", source: "bump-charge" },
+      { start: "2026-08-22T22:00:00+00:00", end: "2026-08-22T23:00:00+00:00", source: "smart-charge" },
+    ]);
+  });
+
+  it("retries without the source field if Kraken rejects it", async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const query = JSON.parse(init?.body as string).query as string;
+      if (query.includes("meta")) {
+        return jsonResponse({ errors: [{ message: "Cannot query field 'meta'" }] });
+      }
+      return jsonResponse({
+        data: { completedDispatches: [{ startDt: "2026-08-22 22:00:00+00:00", endDt: "2026-08-22 23:00:00+00:00" }] },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await fetchCompletedDispatches(testEnv, "jwt-1")).toEqual([
+      { start: "2026-08-22T22:00:00+00:00", end: "2026-08-22T23:00:00+00:00" },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

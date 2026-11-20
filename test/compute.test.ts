@@ -2018,3 +2018,177 @@ describe("getOrComputeDailyHistory", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("smart-charging dispatches priced at the off-peak rate", () => {
+  interface RawDispatch {
+    startDt: string;
+    endDt: string;
+    meta?: { source: string };
+  }
+  interface RawPoint {
+    readAt: string;
+    demand: number;
+    consumptionDelta: number;
+  }
+
+  // 7p for the first 5 UTC hours of every day, 28p for the rest — enough
+  // of an off-peak/peak split to see a dispatch repriced.
+  function dispatchStub(opts: {
+    planned?: RawDispatch[];
+    completed?: RawDispatch[];
+    telemetry: (start: string, end: string) => RawPoint[];
+  }) {
+    return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input.toString();
+      if (url.includes("/graphql/")) {
+        const body = JSON.parse((init?.body as string) ?? "{}") as {
+          query: string;
+          variables: { start?: string; end?: string };
+        };
+        if (body.query.includes("obtainKrakenToken")) {
+          return jsonResponse({ data: { obtainKrakenToken: { token: "jwt-1" } } });
+        }
+        if (body.query.includes("smartMeterTelemetry")) {
+          return jsonResponse({ data: { smartMeterTelemetry: opts.telemetry(body.variables.start!, body.variables.end!) } });
+        }
+        if (body.query.includes("plannedDispatches")) {
+          return jsonResponse({ data: { plannedDispatches: opts.planned ?? [] } });
+        }
+        if (body.query.includes("completedDispatches")) {
+          return jsonResponse({ data: { completedDispatches: opts.completed ?? [] } });
+        }
+        throw new Error(`Unexpected GraphQL query: ${body.query}`);
+      }
+      if (url.includes("/standard-unit-rates/")) {
+        const from = new Date(new URL(url).searchParams.get("period_from")!);
+        const to = new URL(url).searchParams.get("period_to")!;
+        const offPeakEnd = new Date(from.getTime() + 5 * 3_600_000).toISOString();
+        return jsonResponse({
+          count: 2,
+          next: null,
+          previous: null,
+          results: [
+            { value_inc_vat: 28, valid_from: offPeakEnd, valid_to: to },
+            { value_inc_vat: 7, valid_from: from.toISOString(), valid_to: offPeakEnd },
+          ],
+        });
+      }
+      if (url.includes("/standing-charges/")) {
+        return jsonResponse({ count: 0, next: null, previous: null, results: [] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+  }
+
+  const now = new Date("2026-01-20T10:00:00Z");
+
+  it("re-prices last night's already-counted car charge once Kraken reports the dispatch, without double-counting it later", async () => {
+    // Two 3.5 kWh readings in a 22:00–23:00 dispatch, counted at 28p (£1.96).
+    const chargePoints: RawPoint[] = [
+      { readAt: "2026-01-19T22:30:00Z", demand: 7000, consumptionDelta: 3500 },
+      { readAt: "2026-01-19T22:59:50Z", demand: 7000, consumptionDelta: 3500 },
+    ];
+    const fetchMock = dispatchStub({
+      completed: [
+        { startDt: "2026-01-19 22:00:00+00:00", endDt: "2026-01-19 23:00:00+00:00", meta: { source: "smart-charge" } },
+      ],
+      telemetry: (start) => (start.startsWith("2026-01-19T22:00") ? chargePoints : []),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const lastReadingAt = "2026-01-20T09:55:00.000Z";
+    const previousToday: TodayAccumulator = { dateKey: "2026-01-20", kwhSoFar: 2, costGbpSoFar: 0.5, lastReadingAt };
+    const previousMonth: MonthAccumulator = {
+      periodKey: "2026-01-18",
+      kwhSoFar: 20,
+      costGbpSoFar: 5,
+      lastReadingAt,
+      dailyCostsGbp: { "2026-01-18": 1, "2026-01-19": 3.5, "2026-01-20": 0.5 },
+    };
+    const previousHours: HourBucketsState = {
+      buckets: [{ hourStart: "2026-01-19T22:00:00.000Z", kwhSoFar: 7, costGbpSoFar: 1.96 }],
+      lastReadingAt,
+    };
+
+    const first = await computeStatus(testEnv, previousToday, previousMonth, previousHours, now);
+
+    // 7 kWh × (28p − 7p) = £1.47 saved.
+    expect(first.hourBuckets.buckets.find((b) => b.hourStart === "2026-01-19T22:00:00.000Z")?.costGbpSoFar).toBeCloseTo(0.49);
+    expect(first.monthAccumulator.costGbpSoFar).toBeCloseTo(3.53);
+    expect(first.monthAccumulator.dailyCostsGbp["2026-01-19"]).toBeCloseTo(2.03);
+    expect(first.accumulator.costGbpSoFar).toBeCloseTo(0.5); // today unaffected
+    expect(first.dispatchSlots).toEqual(["2026-01-19T22:00:00.000Z", "2026-01-19T22:30:00.000Z"]);
+    expect(first.correctedPastDayKeys).toEqual(["2026-01-19"]);
+
+    await persistComputedStatus(testEnv, first, now);
+
+    const later = new Date("2026-01-20T10:05:00Z");
+    const second = await computeStatus(
+      testEnv,
+      first.accumulator,
+      first.monthAccumulator,
+      first.hourBuckets,
+      later,
+    );
+    expect(second.monthAccumulator.costGbpSoFar).toBeCloseTo(3.53);
+    expect(second.hourBuckets.buckets.find((b) => b.hourStart === "2026-01-19T22:00:00.000Z")?.costGbpSoFar).toBeCloseTo(0.49);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("prices live readings during a planned smart-charge dispatch at the off-peak rate", async () => {
+    vi.stubGlobal(
+      "fetch",
+      dispatchStub({
+        planned: [
+          { startDt: "2026-01-20 09:30:00+00:00", endDt: "2026-01-20 10:30:00+00:00", meta: { source: "smart-charge" } },
+        ],
+        telemetry: () => [{ readAt: "2026-01-20T09:45:00Z", demand: 7000, consumptionDelta: 1000 }],
+      }),
+    );
+
+    const previousToday: TodayAccumulator = {
+      dateKey: "2026-01-20",
+      kwhSoFar: 0,
+      costGbpSoFar: 0,
+      lastReadingAt: "2026-01-20T09:30:00.000Z",
+    };
+    const { status, dispatchSlots } = await computeStatus(testEnv, previousToday, null, null, now);
+
+    expect(status.todayTotalCostGbp).toBeCloseTo(0.07);
+    expect(status.currentRate.pencePerKwh).toBe(7);
+    expect(status.currentRate.validTo).toBe("2026-01-20T10:30:00.000Z");
+    expect(status.nextAgileSlots).toHaveLength(1);
+    // Only slots that have started are stored.
+    expect(dispatchSlots).toEqual(["2026-01-20T09:30:00.000Z", "2026-01-20T10:00:00.000Z"]);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("leaves bump charges at the normal rate", async () => {
+    vi.stubGlobal(
+      "fetch",
+      dispatchStub({
+        planned: [
+          { startDt: "2026-01-20 09:30:00+00:00", endDt: "2026-01-20 10:30:00+00:00", meta: { source: "bump-charge" } },
+        ],
+        telemetry: () => [{ readAt: "2026-01-20T09:45:00Z", demand: 7000, consumptionDelta: 1000 }],
+      }),
+    );
+
+    const previousToday: TodayAccumulator = {
+      dateKey: "2026-01-20",
+      kwhSoFar: 0,
+      costGbpSoFar: 0,
+      lastReadingAt: "2026-01-20T09:30:00.000Z",
+    };
+    const { status, dispatchSlots } = await computeStatus(testEnv, previousToday, null, null, now);
+
+    expect(status.todayTotalCostGbp).toBeCloseTo(0.28);
+    expect(status.currentRate.pencePerKwh).toBe(28);
+    expect(status.nextAgileSlots).toEqual([]);
+    expect(dispatchSlots).toEqual([]);
+
+    vi.unstubAllGlobals();
+  });
+});

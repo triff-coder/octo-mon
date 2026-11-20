@@ -157,8 +157,9 @@ export interface StatusResponse {
    */
   predictedMonthCostGbp: number;
   /**
-   * Upcoming "smart charging" dispatch slots (e.g. Intelligent Octopus Go's
-   * occasional off-schedule "bump charge" boosts), earliest first, chopped
+   * Upcoming "smart charging" dispatch slots (e.g. Intelligent Octopus Go
+   * charging the car outside its usual off-peak hours; bump charges are
+   * billed at the normal rate and left out), earliest first, chopped
    * into 30-minute windows priced at today's off-peak rate. This is *not*
    * the everyday scheduled off-peak window — it's only the occasional extra
    * ones Octopus grants outside/beyond it — so it's empty most of the time,

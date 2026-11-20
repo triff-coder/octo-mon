@@ -149,51 +149,95 @@ export async function fetchTelemetry(
     .sort((a, b) => new Date(a.readAt).getTime() - new Date(b.readAt).getTime());
 }
 
-const PLANNED_DISPATCHES_QUERY = `
-  query PlannedDispatches($accountNumber: String!) {
-    plannedDispatches(accountNumber: $accountNumber) {
-      startDt
-      endDt
-    }
-  }
-`;
-
 interface RawDispatch {
   // Kraken returns these as e.g. "2026-08-22 21:02:49+00:00" (space-
   // separated, not "T"-separated) — valid once normalized, not strictly
   // ISO 8601 as-is.
   startDt: string;
   endDt: string;
+  // What caused the dispatch: "smart-charge" (Octopus scheduled it) or
+  // "bump-charge" (the customer forced a charge from the app), among others.
+  // Only present when the query asked for it — see fetchDispatchList.
+  meta?: { source?: string | null } | null;
 }
 
-/** A window during which Octopus has committed to the tariff's off-peak rate for smart-charging dispatch (Intelligent Octopus). */
+/** A window during which Octopus dispatched smart charging (Intelligent Octopus). */
 export interface DispatchWindow {
   start: string;
   end: string;
+  /**
+   * Kraken's dispatch source, e.g. "smart-charge" or "bump-charge". Absent
+   * when Kraken didn't report one (or rejected the query asking for it).
+   */
+  source?: string;
 }
 
 function normalizeKrakenDateTime(raw: string): string {
   return raw.replace(" ", "T");
 }
 
+type DispatchListField = "plannedDispatches" | "completedDispatches";
+
+function dispatchQuery(field: DispatchListField, withMeta: boolean): string {
+  return `
+  query Dispatches($accountNumber: String!) {
+    ${field}(accountNumber: $accountNumber) {
+      startDt
+      endDt${withMeta ? "\n      meta { source }" : ""}
+    }
+  }
+`;
+}
+
 /**
- * Fetches upcoming "smart charging" dispatch windows for the account —
- * periods where Octopus has committed to the off-peak rate outside (or in
- * addition to) the tariff's normal scheduled window, e.g. Intelligent
- * Octopus Go's occasional daytime/early-evening "bump charge" boosts.
- * Not every tariff or account has these; an account without dispatches
- * configured returns an empty list rather than an error.
+ * Fetches one of Kraken's dispatch lists, asking for each dispatch's source
+ * (so bump charges can be told apart from Octopus-scheduled smart charges).
+ * If Kraken rejects that field, retries without it rather than losing the
+ * dispatch times altogether.
+ */
+async function fetchDispatchList(env: Env, jwt: string, field: DispatchListField): Promise<DispatchWindow[]> {
+  let raw: RawDispatch[];
+  try {
+    const data = await graphqlRequest<Record<string, RawDispatch[] | null>>(jwt, dispatchQuery(field, true), {
+      accountNumber: env.OCTOPUS_ACCOUNT_NUMBER,
+    });
+    raw = data[field] ?? [];
+  } catch {
+    const data = await graphqlRequest<Record<string, RawDispatch[] | null>>(jwt, dispatchQuery(field, false), {
+      accountNumber: env.OCTOPUS_ACCOUNT_NUMBER,
+    });
+    raw = data[field] ?? [];
+  }
+
+  return raw
+    .map((d): DispatchWindow => {
+      const window: DispatchWindow = { start: normalizeKrakenDateTime(d.startDt), end: normalizeKrakenDateTime(d.endDt) };
+      const source = d.meta?.source;
+      if (source) window.source = source;
+      return window;
+    })
+    .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+}
+
+/**
+ * Fetches upcoming (and in-progress) "smart charging" dispatch windows for
+ * the account — periods where Octopus has scheduled charging outside (or in
+ * addition to) the tariff's normal off-peak window, e.g. Intelligent
+ * Octopus Go charging the car at 22:00. Not every tariff or account has
+ * these; an account without dispatches configured returns an empty list
+ * rather than an error.
  */
 export async function fetchPlannedDispatches(env: Env, jwt: string): Promise<DispatchWindow[]> {
-  const data = await graphqlRequest<{ plannedDispatches: RawDispatch[] | null }>(
-    jwt,
-    PLANNED_DISPATCHES_QUERY,
-    { accountNumber: env.OCTOPUS_ACCOUNT_NUMBER },
-  );
+  return fetchDispatchList(env, jwt, "plannedDispatches");
+}
 
-  return (data.plannedDispatches ?? [])
-    .map((d) => ({ start: normalizeKrakenDateTime(d.startDt), end: normalizeKrakenDateTime(d.endDt) }))
-    .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+/**
+ * Fetches recently finished dispatch windows for the account. Kraken only
+ * keeps a limited history here, so compute.ts persists what it has seen
+ * (see DISPATCH_SLOTS_KV_KEY) rather than relying on this for old days.
+ */
+export async function fetchCompletedDispatches(env: Env, jwt: string): Promise<DispatchWindow[]> {
+  return fetchDispatchList(env, jwt, "completedDispatches");
 }
 
 interface RawRateEntry {

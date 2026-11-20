@@ -209,13 +209,31 @@ backfill, so both the hourly chart and the weekly averages fill in gradually
 take a further 7 days to become meaningful (they're 0/absent until then).
 
 `nextAgileSlots` lists upcoming "smart charging" dispatch windows — the
-occasional extra periods Octopus grants at the tariff's off-peak rate outside
-(or extending) its normal scheduled window, e.g. Intelligent Octopus Go's
-"bump charge" boosts — chopped into 30-minute slots, earliest first, capped
-at 6. This is empty most of the time (it's *not* the everyday scheduled
-off-peak window, just the occasional bonus ones), and always empty on a
+occasional extra periods Octopus schedules your car to charge at the
+tariff's off-peak rate outside (or extending) its normal scheduled window,
+e.g. Intelligent Octopus Go charging at 22:00 — chopped into 30-minute
+slots, earliest first, capped at 6. Bump charges (a charge you force from
+the Octopus app) are billed at the normal rate, so they're left out. This
+is empty most of the time (it's *not* the everyday scheduled off-peak
+window, just the occasional bonus ones), and always empty on a
 tariff/account with no dispatch mechanism at all — a failed or unsupported
 dispatch lookup degrades to an empty list rather than failing the request.
+
+#### Dispatch pricing
+
+Octopus bills every half-hour slot a smart-charging dispatch touches at
+the off-peak rate for the whole house, but the published unit rates don't
+show that. So every cost figure (current £/hr, last hour, the hourly chart,
+today, yesterday, this month, `/history`) lays known dispatch slots over the
+published rates (`src/dispatch.ts`). Each cron tick fetches both planned and
+completed dispatches from Kraken. When it learns about a slot it has already
+counted at the published rate (e.g. last night's charge, once Kraken reports
+it as completed), it refetches that slot's telemetry and subtracts the
+difference from the stored totals. Slots are kept in KV (`dispatch:slots`)
+for 40 days, since Kraken only reports recent dispatches. Bump charges
+(dispatch source `bump-charge`) stay at the normal rate. If Kraken won't say
+what caused a dispatch, it's treated as a smart charge. Any daily cap Octopus
+puts on cheap dispatch hours isn't modelled.
 
 If it's the very first request, the Worker computes live (a bit slower); after
 that, the 5-minute cron keeps a warm snapshot so requests are fast.
@@ -356,8 +374,9 @@ chart reads as a time axis rather than 24 unlabeled bars. Bars for the
 overnight off-peak window (23:30-05:30 local) are shaded a lighter blue —
 since bars are whole clock hours, the 23:00 and 05:00 bars (each only half
 in the window) are included too rather than left an odd one out. When Octopus has
-granted any upcoming "smart charging" dispatch slots (occasional off-peak
-bonus windows, e.g. Intelligent Octopus Go's "bump charge" boosts), the
+scheduled any upcoming "smart charging" dispatch slots (occasional off-peak
+bonus windows, e.g. Intelligent Octopus Go charging the car outside its
+usual overnight window), the
 medium widget lists them as "NEXT AGILE" between the current-usage numbers
 and the mini chart — this is empty, and the column just doesn't appear,
 most of the time. If the Worker is briefly

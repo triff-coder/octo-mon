@@ -16,13 +16,17 @@ import type { UnitRate } from "./types";
 export const SLOT_MS = 30 * 60_000;
 
 /**
- * Dispatches billed at the off-peak rate. Bump charges (a charge the
- * customer forces from the app) are billed at the normal rate; everything
- * else, including dispatches where Kraken didn't say what caused them, is
- * treated as an Octopus-scheduled smart charge.
+ * Dispatches billed at the off-peak rate: only ones Kraken says Octopus
+ * scheduled ("smart-charge"). Bump charges (a charge the customer forces
+ * from the app) are billed at the normal rate, and Kraken has been seen
+ * reporting those as "unknown" rather than "bump-charge", so any other
+ * source counts as full price. A dispatch with no source at all only
+ * happens when Kraken rejected the query asking for it (see
+ * fetchDispatchList); those are treated as smart charges, since otherwise
+ * no dispatch could ever be priced cheap.
  */
 export function isOffPeakDispatch(dispatch: DispatchWindow): boolean {
-  return dispatch.source !== "bump-charge";
+  return dispatch.source === undefined || dispatch.source === "smart-charge";
 }
 
 export function slotStartMs(instantMs: number): number {

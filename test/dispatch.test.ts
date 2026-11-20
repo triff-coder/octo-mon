@@ -17,8 +17,9 @@ describe("slotKeysForDispatch", () => {
 });
 
 describe("isOffPeakDispatch", () => {
-  it("treats bump charges as full price and everything else as off-peak", () => {
+  it("only treats smart charges (or dispatches with no source reported) as off-peak", () => {
     expect(isOffPeakDispatch({ start: "", end: "", source: "bump-charge" })).toBe(false);
+    expect(isOffPeakDispatch({ start: "", end: "", source: "unknown" })).toBe(false);
     expect(isOffPeakDispatch({ start: "", end: "", source: "smart-charge" })).toBe(true);
     expect(isOffPeakDispatch({ start: "", end: "" })).toBe(true);
   });

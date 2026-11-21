@@ -76,6 +76,16 @@ export interface MonthAccumulator {
   dailyCostsGbp: Record<string, number>;
 }
 
+/** Last billing period's final total, saved at rollover (or backfilled) — see resolveLastMonth. */
+export interface LastMonthSummary {
+  periodKey: string;
+  kwh: number;
+  /** Consumption cost plus the standing charge for every day of the period. */
+  costGbp: number;
+  /** "tracked" = the Worker's own month accumulator at rollover; "backfilled" = REST consumption data. */
+  source: "tracked" | "backfilled";
+}
+
 /** Running totals for a single UTC clock hour, part of HourBucketsState. */
 export interface HourBucket {
   /** ISO instant at the start of this UTC clock hour. */
@@ -124,6 +134,12 @@ export interface StatusResponse {
   /** This billing period's consumption cost so far, plus the standing charge for every elapsed day of the period (today's rate assumed for the whole period — see computeStatus). */
   thisMonthTotalCostGbp: number;
   billingPeriodStart: string;
+  /** Last billing period's total consumption, or null if it isn't known (yet). */
+  lastMonthTotalKwh: number | null;
+  /** Last billing period's consumption cost plus its standing charge for every day of the period, or null if unknown. */
+  lastMonthTotalCostGbp: number | null;
+  /** Start date (YYYY-MM-DD) of the billing period the lastMonth* figures cover, or null if unknown. */
+  lastBillingPeriodStart: string | null;
   /** Set when the month backfill was attempted and failed (falling back to a zero-balance start), null otherwise. */
   monthBackfillError: string | null;
   /** Europe/London date of the earliest day this billing period has any recorded data for, derived from MonthAccumulator.dailyCostsGbp. Days before it are estimated at the daily average — see predictMonthCostGbp. */

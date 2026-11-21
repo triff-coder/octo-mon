@@ -13,6 +13,8 @@ An iPhone home-screen widget (built with [Scriptable](https://scriptable.app/)) 
 - **This month's total**: running spend since the start of the current Octopus
   billing period (the 18th of each month), in £, including the standing
   charge for every elapsed day of the period
+- **Last month's total** (web dashboard): the previous billing period's final
+  spend, in £, including its standing charge, shown under this month's
 - **24-hour chart** (medium and large widgets): a bar chart of spend per hour
   over the last 24 complete hours, with a small mark on each bar showing what
   that hour-of-day has cost on average over the preceding week — so you can
@@ -162,6 +164,9 @@ You should get back JSON like:
   "thisMonthTotalCostGbp": 41.92,
   "billingPeriodStart": "2026-08-18",
   "monthBackfillError": null,
+  "lastMonthTotalKwh": 402.1,
+  "lastMonthTotalCostGbp": 96.4,
+  "lastBillingPeriodStart": "2026-07-18",
   "lastHourCostGbp": 0.21,
   "lastHourKwh": 0.9,
   "hourlyBuckets": [
@@ -196,6 +201,14 @@ Octopus's historical consumption REST endpoint before continuing forward with
 live telemetry — so it reflects the whole billing period so far, not just
 however long the Worker happens to have been running. A day the meter has no
 data for (e.g. before a Home Mini was installed) simply contributes zero.
+
+`lastMonthTotalKwh`/`lastMonthTotalCostGbp` cover the whole previous billing
+period (starting `lastBillingPeriodStart`). They're snapshotted from the month
+total at rollover and kept in KV; if no snapshot exists (first month after
+setup, KV loss) the Worker backfills that period once from the consumption REST
+endpoint, retrying at most every 6 hours on failure. The standing charge is
+the period's last day's rate times its number of days. All three are `null`
+until a figure is available.
 
 `hourlyBuckets` always has exactly 24 entries, oldest first, one per complete
 UTC clock hour (the sample above is truncated for brevity) — the current,

@@ -30,6 +30,7 @@ import type {
   DailyHistoryResponse,
   Env,
   HourBucketsState,
+  LastMonthSummary,
   MonthAccumulator,
   StatusResponse,
   TodayAccumulator,
@@ -40,6 +41,12 @@ const STATUS_SNAPSHOT_KV_KEY = "status:latest";
 const STATUS_SNAPSHOT_TTL_SECONDS = 30 * 60;
 const TODAY_ACCUMULATOR_KV_KEY = "today:accumulator";
 const MONTH_ACCUMULATOR_KV_KEY = "month:accumulator";
+// Last billing period's final total — see resolveLastMonth.
+const LAST_MONTH_KV_KEY = "month:previous";
+const LAST_MONTH_FAILED_KV_KEY = "month:previous:failed";
+const LAST_MONTH_RETRY_SECONDS = 6 * 60 * 60;
+// Kept a little past the next rollover, by which point it's been replaced.
+const LAST_MONTH_TTL_SECONDS = 40 * 86_400;
 const HOUR_BUCKETS_KV_KEY = "hours:buckets";
 // Days of history GET /history serves -- see computeDailyHistory. Declared
 // here (ahead of its other uses further down) because HOUR_BUCKET_RETENTION_HOURS
@@ -495,11 +502,27 @@ async function backfillMonthAccumulator(
     };
   }
 
-  const intervals = await fetchHistoricalConsumptionFromEarliestAvailable(env, periodStart, todayStart);
+  const { kwh, costGbp, dailyCostsGbp } = await fetchAndPriceConsumption(env, periodStart, todayStart, cheapSlots);
+  return { periodKey, kwhSoFar: kwh, costGbpSoFar: costGbp, lastReadingAt: todayStart.toISOString(), dailyCostsGbp };
+}
+
+/**
+ * Fetches REST consumption for [start, end) (narrowing past a 404 on the
+ * earliest days, see fetchHistoricalConsumptionFromEarliestAvailable) and
+ * prices each interval at its day's unit rate, with `cheapSlots` laid over.
+ * Consumption only — no standing charge.
+ */
+async function fetchAndPriceConsumption(
+  env: Env,
+  start: Date,
+  end: Date,
+  cheapSlots: ReadonlySet<string>,
+): Promise<{ kwh: number; costGbp: number; dailyCostsGbp: Record<string, number> }> {
+  const intervals = await fetchHistoricalConsumptionFromEarliestAvailable(env, start, end);
   const ratesCache = new Map<string, UnitRate[]>();
 
-  let kwhSoFar = 0;
-  let costGbpSoFar = 0;
+  let kwh = 0;
+  let costGbp = 0;
   const dailyCostsGbp: Record<string, number> = {};
 
   for (const interval of intervals) {
@@ -514,14 +537,104 @@ async function backfillMonthAccumulator(
 
     const rate = findRateForInstant(rates, intervalStart);
     if (rate) {
-      const costGbp = (interval.consumptionKwh * rate.pencePerKwh) / 100;
-      kwhSoFar += interval.consumptionKwh;
-      costGbpSoFar += costGbp;
-      dailyCostsGbp[dayKey] = (dailyCostsGbp[dayKey] ?? 0) + costGbp;
+      const intervalCostGbp = (interval.consumptionKwh * rate.pencePerKwh) / 100;
+      kwh += interval.consumptionKwh;
+      costGbp += intervalCostGbp;
+      dailyCostsGbp[dayKey] = (dailyCostsGbp[dayKey] ?? 0) + intervalCostGbp;
     }
   }
 
-  return { periodKey, kwhSoFar, costGbpSoFar, lastReadingAt: todayStart.toISOString(), dailyCostsGbp };
+  return { kwh, costGbp, dailyCostsGbp };
+}
+
+/** The billing period immediately before the one starting `currentPeriodKey`. */
+function previousBillingPeriodKey(currentPeriodKey: string): string {
+  return billingPeriodKey(new Date(londonMidnightUtc(currentPeriodKey).getTime() - 1));
+}
+
+/**
+ * Turns a previous period's consumption totals into a LastMonthSummary by
+ * adding the standing charge for every day of that period. Like
+ * thisMonthTotalCostGbp, one day's rate (here the period's last day) is
+ * assumed for the whole period rather than fetching each day's own.
+ */
+async function summarizePeriod(
+  env: Env,
+  periodKey: string,
+  nextPeriodKey: string,
+  kwh: number,
+  consumptionCostGbp: number,
+  source: LastMonthSummary["source"],
+): Promise<LastMonthSummary> {
+  const days = Math.round(
+    (londonMidnightUtc(nextPeriodKey).getTime() - londonMidnightUtc(periodKey).getTime()) / 86_400_000,
+  );
+  const standingChargePence = await fetchStandingChargeForDay(env, addDaysToDateKey(nextPeriodKey, -1));
+  return { periodKey, kwh, costGbp: consumptionCostGbp + (standingChargePence / 100) * days, source };
+}
+
+interface ResolvedLastMonth {
+  summary: LastMonthSummary | null;
+  /** True when `summary` was worked out this tick and needs writing to KV. */
+  isNew: boolean;
+}
+
+/**
+ * Works out last billing period's total. In order of preference:
+ *  1. the month accumulator as it stood at rollover (`previousMonthAccumulator`
+ *     still being last period's means this is the first tick of the new one),
+ *  2. the summary already saved in KV for that period,
+ *  3. a one-off REST backfill of the whole previous period — for the first
+ *     month after this feature shipped, or after KV loss. Failures are
+ *     remembered for LAST_MONTH_RETRY_SECONDS so a broken consumption
+ *     endpoint isn't hammered on every tick.
+ * Best effort throughout: any failure just leaves it null.
+ */
+async function resolveLastMonth(
+  env: Env,
+  previousMonthAccumulator: MonthAccumulator | null,
+  currentPeriodKey: string,
+  cheapSlots: ReadonlySet<string>,
+): Promise<ResolvedLastMonth> {
+  const lastPeriodKey = previousBillingPeriodKey(currentPeriodKey);
+  try {
+    if (previousMonthAccumulator?.periodKey === lastPeriodKey) {
+      const summary = await summarizePeriod(
+        env,
+        lastPeriodKey,
+        currentPeriodKey,
+        previousMonthAccumulator.kwhSoFar,
+        previousMonthAccumulator.costGbpSoFar,
+        "tracked",
+      );
+      return { summary, isNew: true };
+    }
+
+    const stored = await getJson<LastMonthSummary>(env.OCTOMON_KV, LAST_MONTH_KV_KEY);
+    if (stored?.periodKey === lastPeriodKey) return { summary: stored, isNew: false };
+
+    if (await getJson<string>(env.OCTOMON_KV, LAST_MONTH_FAILED_KV_KEY)) return { summary: null, isNew: false };
+
+    try {
+      const { kwh, costGbp } = await fetchAndPriceConsumption(
+        env,
+        londonMidnightUtc(lastPeriodKey),
+        londonMidnightUtc(currentPeriodKey),
+        cheapSlots,
+      );
+      const summary = await summarizePeriod(env, lastPeriodKey, currentPeriodKey, kwh, costGbp, "backfilled");
+      return { summary, isNew: true };
+    } catch (error) {
+      console.error("octo-mon last-month backfill failed, retrying later:", error);
+      await putJson(env.OCTOMON_KV, LAST_MONTH_FAILED_KV_KEY, lastPeriodKey, {
+        expirationTtl: LAST_MONTH_RETRY_SECONDS,
+      });
+      return { summary: null, isNew: false };
+    }
+  } catch (error) {
+    console.error("octo-mon last-month total unavailable:", error);
+    return { summary: null, isNew: false };
+  }
 }
 
 /**
@@ -886,6 +999,8 @@ export interface ComputedStatus {
   accumulator: TodayAccumulator;
   monthAccumulator: MonthAccumulator;
   hourBuckets: HourBucketsState;
+  /** Last billing period's total, when it was newly worked out this tick and needs saving. */
+  newLastMonthSummary: LastMonthSummary | null;
   /** Off-peak dispatch slots the accumulators above are now priced with (already-started ones only). */
   dispatchSlots: string[];
   /** London dates before today whose totals a dispatch correction changed, so cached /history is out of date. */
@@ -941,6 +1056,7 @@ export async function computeStatus(
     now,
     cheapSlots,
   );
+  const lastMonth = await resolveLastMonth(env, previousMonthAccumulator, resolvedMonthAccumulator.periodKey, cheapSlots);
 
   // The accumulator resets for a new day (see advanceTodayAccumulator), so
   // whenever it's reused it's always from earlier today; fetchSince is
@@ -1044,6 +1160,9 @@ export async function computeStatus(
     thisMonthTotalCostGbp,
     billingPeriodStart: monthAccumulator.periodKey,
     monthBackfillError: backfillError,
+    lastMonthTotalKwh: lastMonth.summary?.kwh ?? null,
+    lastMonthTotalCostGbp: lastMonth.summary?.costGbp ?? null,
+    lastBillingPeriodStart: lastMonth.summary?.periodKey ?? null,
     firstDataDateKey: recordedDayKeys[0] ?? todayKey,
     completeDataDayCount: completeDataDays.length,
     lastHourCostGbp,
@@ -1061,6 +1180,7 @@ export async function computeStatus(
     accumulator,
     monthAccumulator,
     hourBuckets,
+    newLastMonthSummary: lastMonth.isNew ? lastMonth.summary : null,
     dispatchSlots: [...cheapSlots].filter((k) => new Date(k).getTime() <= now.getTime()).sort(),
     correctedPastDayKeys: [...correction.correctedDayKeys].filter((k) => k < todayKey).sort(),
     bonusSlots: await resolveBonusSlots(env, dispatchSlots.plannedOffPeak, now),
@@ -1081,6 +1201,11 @@ export async function persistComputedStatus(env: Env, computed: ComputedStatus, 
   await putJson(env.OCTOMON_KV, HOUR_BUCKETS_KV_KEY, computed.hourBuckets, {
     expirationTtl: HOUR_BUCKETS_TTL_SECONDS,
   });
+  if (computed.newLastMonthSummary) {
+    await putJson(env.OCTOMON_KV, LAST_MONTH_KV_KEY, computed.newLastMonthSummary, {
+      expirationTtl: LAST_MONTH_TTL_SECONDS,
+    });
+  }
   const dispatchState: DispatchSlotsState = { slots: computed.dispatchSlots };
   await putJson(env.OCTOMON_KV, DISPATCH_SLOTS_KV_KEY, dispatchState, {
     expirationTtl: DISPATCH_SLOT_RETENTION_MS / 1000,

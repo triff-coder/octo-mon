@@ -123,6 +123,19 @@ function mockOctopusApi(opts: MockApiOptions) {
   });
 }
 
+/**
+ * Consumption requests other than resolveLastMonth's one-off backfill of the
+ * previous billing period (any request starting before `periodStartIso`).
+ */
+function currentPeriodConsumptionCalls(fetchMock: ReturnType<typeof mockOctopusApi>, periodStartIso: string) {
+  return fetchMock.mock.calls.filter(([url]) => {
+    const u = String(url);
+    if (!u.includes("/consumption/")) return false;
+    const from = new URL(u).searchParams.get("period_from");
+    return !from || new Date(from).getTime() >= new Date(periodStartIso).getTime();
+  });
+}
+
 /** Earliest Europe/London date the accumulator has recorded any cost against. */
 function earliestDataDay(accumulator: MonthAccumulator): string | undefined {
   return Object.keys(accumulator.dailyCostsGbp ?? {}).sort()[0];
@@ -1414,10 +1427,7 @@ describe("computeStatus month backfill", () => {
 
     await computeStatus(testEnv, null, previousMonth, null, new Date("2026-01-15T10:11:00Z"));
 
-    const consumptionCalls = fetchMock.mock.calls.filter(([url]) =>
-      String(url).includes("/consumption/"),
-    );
-    expect(consumptionCalls).toHaveLength(0);
+    expect(currentPeriodConsumptionCalls(fetchMock, "2025-12-18T00:00:00Z")).toHaveLength(0);
 
     vi.unstubAllGlobals();
   });
@@ -1467,8 +1477,7 @@ describe("computeStatus month backfill", () => {
     expect(monthAccumulator.costGbpSoFar).toBeCloseTo(4.1);
 
     // No REST lookup involved in any of that.
-    const consumptionCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes("/consumption/"));
-    expect(consumptionCalls).toHaveLength(0);
+    expect(currentPeriodConsumptionCalls(fetchMock, "2025-12-18T00:00:00Z")).toHaveLength(0);
 
     vi.unstubAllGlobals();
   });
@@ -1557,10 +1566,107 @@ describe("computeStatus month backfill", () => {
 
     await computeStatus(testEnv, null, null, null, new Date("2026-01-18T10:01:00Z"));
 
-    const consumptionCalls = fetchMock.mock.calls.filter(([url]) =>
-      String(url).includes("/consumption/"),
+    expect(currentPeriodConsumptionCalls(fetchMock, "2026-01-18T00:00:00Z")).toHaveLength(0);
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("computeStatus last month total", () => {
+  it("snapshots the month accumulator at rollover, adding a standing charge for every day of the period", async () => {
+    const fetchMock = mockOctopusApi({
+      telemetry: [{ readAt: "2026-01-18T00:10:00Z", demand: 500, consumptionDelta: 1000 }],
+      pencePerKwh: 10,
+      standingChargePencePerDay: 50,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const lastPeriod: MonthAccumulator = {
+      periodKey: "2025-12-18",
+      kwhSoFar: 300,
+      costGbpSoFar: 60,
+      lastReadingAt: "2026-01-17T23:59:00Z",
+      dailyCostsGbp: {},
+    };
+
+    const computed = await computeStatus(testEnv, null, lastPeriod, null, new Date("2026-01-18T00:11:00Z"));
+
+    // 2025-12-18 .. 2026-01-17 is 31 days.
+    expect(computed.status.lastBillingPeriodStart).toBe("2025-12-18");
+    expect(computed.status.lastMonthTotalKwh).toBeCloseTo(300);
+    expect(computed.status.lastMonthTotalCostGbp).toBeCloseTo(60 + 0.5 * 31);
+    expect(computed.newLastMonthSummary?.source).toBe("tracked");
+
+    // Saved, so later ticks (with the new period's accumulator) still have it.
+    await persistComputedStatus(testEnv, computed, new Date("2026-01-18T00:11:00Z"));
+    const later = await computeStatus(
+      testEnv,
+      computed.accumulator,
+      computed.monthAccumulator,
+      computed.hourBuckets,
+      new Date("2026-01-18T00:20:00Z"),
     );
-    expect(consumptionCalls).toHaveLength(0);
+    expect(later.status.lastMonthTotalCostGbp).toBeCloseTo(60 + 0.5 * 31);
+    expect(later.newLastMonthSummary).toBeNull();
+    expect(currentPeriodConsumptionCalls(fetchMock, "2026-01-18T00:00:00Z")).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/consumption/"))).toHaveLength(0);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("backfills last period from the consumption endpoint when nothing was saved for it", async () => {
+    const fetchMock = mockOctopusApi({
+      telemetry: [{ readAt: "2026-01-15T10:10:00Z", demand: 500, consumptionDelta: 1000 }],
+      pencePerKwh: 10,
+      consumption: [
+        { consumptionKwh: 4, intervalStart: "2025-11-20T10:00:00Z", intervalEnd: "2025-11-20T10:30:00Z" },
+        { consumptionKwh: 6, intervalStart: "2025-12-10T10:00:00Z", intervalEnd: "2025-12-10T10:30:00Z" },
+      ],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const currentMonth: MonthAccumulator = {
+      periodKey: "2025-12-18",
+      kwhSoFar: 40,
+      costGbpSoFar: 4,
+      lastReadingAt: "2026-01-15T10:05:00Z",
+      dailyCostsGbp: { "2025-12-18": 4 },
+    };
+
+    const computed = await computeStatus(testEnv, null, currentMonth, null, new Date("2026-01-15T10:11:00Z"));
+
+    expect(computed.status.lastBillingPeriodStart).toBe("2025-11-18");
+    expect(computed.status.lastMonthTotalKwh).toBeCloseTo(10);
+    expect(computed.status.lastMonthTotalCostGbp).toBeCloseTo(1);
+    expect(computed.newLastMonthSummary?.source).toBe("backfilled");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("leaves last month null when the backfill fails, and doesn't retry it straight away", async () => {
+    const fetchMock = mockOctopusApi({
+      telemetry: [{ readAt: "2026-01-15T10:10:00Z", demand: 500, consumptionDelta: 1000 }],
+      pencePerKwh: 10,
+      consumptionFails: true,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const currentMonth: MonthAccumulator = {
+      periodKey: "2025-12-18",
+      kwhSoFar: 40,
+      costGbpSoFar: 4,
+      lastReadingAt: "2026-01-15T10:05:00Z",
+      dailyCostsGbp: { "2025-12-18": 4 },
+    };
+
+    const first = await computeStatus(testEnv, null, currentMonth, null, new Date("2026-01-15T10:11:00Z"));
+    expect(first.status.lastMonthTotalCostGbp).toBeNull();
+    expect(first.status.lastMonthTotalKwh).toBeNull();
+    const callsAfterFirst = fetchMock.mock.calls.filter(([url]) => String(url).includes("/consumption/")).length;
+    expect(callsAfterFirst).toBeGreaterThan(0);
+
+    await computeStatus(testEnv, null, currentMonth, null, new Date("2026-01-15T10:16:00Z"));
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/consumption/")).length).toBe(callsAfterFirst);
 
     vi.unstubAllGlobals();
   });
@@ -1605,6 +1711,9 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       thisMonthTotalCostGbp: 9,
       billingPeriodStart: "2025-12-18",
       monthBackfillError: null,
+      lastMonthTotalKwh: null,
+      lastMonthTotalCostGbp: null,
+      lastBillingPeriodStart: null,
       firstDataDateKey: "2025-12-18",
       completeDataDayCount: 0,
       lastHourCostGbp: 0.4,
@@ -1647,6 +1756,9 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       thisMonthTotalCostGbp: 9,
       billingPeriodStart: "2025-12-18",
       monthBackfillError: null,
+      lastMonthTotalKwh: null,
+      lastMonthTotalCostGbp: null,
+      lastBillingPeriodStart: null,
       firstDataDateKey: "2025-12-18",
       completeDataDayCount: 0,
       lastHourCostGbp: 0.4,
@@ -1706,6 +1818,9 @@ describe("persistComputedStatus / loadTodayAccumulator / getOrComputeStatus", ()
       thisMonthTotalCostGbp: 9,
       billingPeriodStart: "2025-12-18",
       monthBackfillError: null,
+      lastMonthTotalKwh: null,
+      lastMonthTotalCostGbp: null,
+      lastBillingPeriodStart: null,
       firstDataDateKey: "2025-12-18",
       completeDataDayCount: 0,
       lastHourCostGbp: 0.4,

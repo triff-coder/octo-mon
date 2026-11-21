@@ -68,6 +68,8 @@ export function renderDashboardHtml(token: string): string {
   .stat-label { font-size: 11px; font-weight: 600; color: #9aa0a8; margin: 0 0 4px; }
   .stat-value { font-size: 20px; font-weight: 700; margin: 0; }
   .stat-kwh { font-size: 11px; color: #9aa0a8; margin: 2px 0 0; }
+  #lastMonth { margin-top: 12px; display: none; }
+  #lastMonth.visible { display: block; }
   #predictedLabel { font-size: 11px; font-weight: 600; color: #9aa0a8; margin: 0 0 8px; }
   .predicted-row { display: flex; gap: 32px; margin-bottom: 24px; }
   #chartLabel { font-size: 11px; color: #9aa0a8; margin-bottom: 8px; }
@@ -151,6 +153,11 @@ export function renderDashboardHtml(token: string): string {
       <p class="stat-label">THIS MONTH</p>
       <p class="stat-value" id="monthCost">&mdash;</p>
       <p class="stat-kwh" id="monthKwh">&mdash;</p>
+      <div id="lastMonth">
+        <p class="stat-label">LAST MONTH</p>
+        <p class="stat-value" id="lastMonthCost">&mdash;</p>
+        <p class="stat-kwh" id="lastMonthKwh">&mdash;</p>
+      </div>
     </div>
   </div>
 
@@ -196,6 +203,9 @@ export function renderDashboardHtml(token: string): string {
   var yesterdayKwhEl = document.getElementById("yesterdayKwh");
   var monthCostEl = document.getElementById("monthCost");
   var monthKwhEl = document.getElementById("monthKwh");
+  var lastMonthEl = document.getElementById("lastMonth");
+  var lastMonthCostEl = document.getElementById("lastMonthCost");
+  var lastMonthKwhEl = document.getElementById("lastMonthKwh");
   var predictedTodayCostEl = document.getElementById("predictedTodayCost");
   var predictedMonthCostEl = document.getElementById("predictedMonthCost");
   var staleBadgeEl = document.getElementById("staleBadge");
@@ -494,6 +504,13 @@ export function renderDashboardHtml(token: string): string {
     yesterdayKwhEl.textContent = formatKwh(status.yesterdayTotalKwh || 0);
     monthCostEl.textContent = formatPounds(status.thisMonthTotalCostGbp);
     monthKwhEl.textContent = formatKwh(status.thisMonthTotalKwh);
+    // Null until the Worker knows last billing period's total (see resolveLastMonth).
+    var hasLastMonth = typeof status.lastMonthTotalCostGbp === "number";
+    lastMonthEl.classList.toggle("visible", hasLastMonth);
+    if (hasLastMonth) {
+      lastMonthCostEl.textContent = formatPounds(status.lastMonthTotalCostGbp);
+      lastMonthKwhEl.textContent = formatKwh(status.lastMonthTotalKwh || 0);
+    }
     predictedTodayCostEl.textContent = formatPounds(status.predictedTodayCostGbp || 0);
     predictedMonthCostEl.textContent = formatPounds(status.predictedMonthCostGbp || 0);
 

@@ -203,7 +203,7 @@ async function fetchDispatchList(env: Env, jwt: string, field: DispatchListField
     });
     raw = data[field] ?? [];
   } catch (error) {
-    console.error(`octo-mon ${field} with source failed, retrying without it:`, error);
+    console.error(`octo-mon ${field} with source failed, retrying without it:`, String(error));
     const data = await graphqlRequest<Record<string, RawDispatch[] | null>>(jwt, dispatchQuery(field, false), {
       accountNumber: env.OCTOPUS_ACCOUNT_NUMBER,
     });

@@ -31,7 +31,7 @@ export default {
         const status = await getOrComputeStatus(env, new Date(), forceRefresh);
         return jsonResponse(status, 200);
       } catch (error) {
-        console.error("octo-mon /status failed:", error);
+        console.error("octo-mon /status failed:", String(error));
         const message = error instanceof Error ? error.message : String(error);
         return jsonResponse({ error: "internal_error", message }, 500);
       }
@@ -46,7 +46,7 @@ export default {
         const history = await getOrComputeDailyHistory(env, new Date(), forceRefresh);
         return jsonResponse(history, 200);
       } catch (error) {
-        console.error("octo-mon /history failed:", error);
+        console.error("octo-mon /history failed:", String(error));
         const message = error instanceof Error ? error.message : String(error);
         return jsonResponse({ error: "internal_error", message }, 500);
       }
@@ -76,7 +76,7 @@ export default {
       const computed = await computeStatus(env, previousAccumulator, previousMonthAccumulator, previousHourBuckets, now);
       await persistComputedStatus(env, computed, now);
     } catch (error) {
-      console.error("octo-mon cron tick failed:", error);
+      console.error("octo-mon cron tick failed:", String(error));
     }
   },
 } satisfies ExportedHandler<Env>;

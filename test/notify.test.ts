@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { describeBonusSlots, notifyNewBonusSlots } from "../src/notify";
+import { describeBonusSlots, notifyNewBonusSlots, NTFY_RETRY_DELAYS_MS } from "../src/notify";
 import type { BonusSlot } from "../src/notify";
 import type { Env } from "../src/types";
 
@@ -69,9 +69,45 @@ describe("notifyNewBonusSlots", () => {
     expect((fetchMock.mock.calls[1] as [string, RequestInit])[1].body).toBe("21:00–21:30 at 7.0p/kWh (normally 34.7p)");
   });
 
-  it("retries on the next tick if the push fails", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("nope", { status: 500 })));
-    await expect(notifyNewBonusSlots(testEnv, evening, now)).rejects.toThrow("HTTP 500");
+  it("retries a rate-limited push straight away rather than waiting for the next tick", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response("limit reached", { status: 429 }))
+        .mockRejectedValueOnce(new Error("connection reset"))
+        .mockResolvedValueOnce(new Response("ok"));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const done = notifyNewBonusSlots(testEnv, evening, now);
+      await vi.advanceTimersByTimeAsync(NTFY_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0));
+      await done;
+
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      await notifyNewBonusSlots(testEnv, evening, now);
+      expect(fetchMock).toHaveBeenCalledTimes(3); // marked as announced
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("doesn't retry a push ntfy rejects outright, and says why", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("invalid topic", { status: 400 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(notifyNewBonusSlots(testEnv, evening, now)).rejects.toThrow("HTTP 400 invalid topic");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries on the next tick if the push keeps failing", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => new Response("nope", { status: 500 })));
+      const failed = expect(notifyNewBonusSlots(testEnv, evening, now)).rejects.toThrow("HTTP 500 nope");
+      await vi.advanceTimersByTimeAsync(NTFY_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0));
+      await failed;
+    } finally {
+      vi.useRealTimers();
+    }
 
     const fetchMock = vi.fn().mockResolvedValue(new Response("ok"));
     vi.stubGlobal("fetch", fetchMock);

@@ -625,14 +625,14 @@ async function resolveLastMonth(
       const summary = await summarizePeriod(env, lastPeriodKey, currentPeriodKey, kwh, costGbp, "backfilled");
       return { summary, isNew: true };
     } catch (error) {
-      console.error("octo-mon last-month backfill failed, retrying later:", error);
+      console.error("octo-mon last-month backfill failed, retrying later:", String(error));
       await putJson(env.OCTOMON_KV, LAST_MONTH_FAILED_KV_KEY, lastPeriodKey, {
         expirationTtl: LAST_MONTH_RETRY_SECONDS,
       });
       return { summary: null, isNew: false };
     }
   } catch (error) {
-    console.error("octo-mon last-month total unavailable:", error);
+    console.error("octo-mon last-month total unavailable:", String(error));
     return { summary: null, isNew: false };
   }
 }
@@ -736,7 +736,7 @@ async function resolveMonthAccumulator(
     return { accumulator, backfillError: null };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error("octo-mon month backfill failed, starting this month's total from zero:", error);
+    console.error("octo-mon month backfill failed, starting this month's total from zero:", String(error));
     return {
       accumulator: {
         periodKey: billingPeriodKey(now),
@@ -849,13 +849,13 @@ async function resolveDispatchSlots(env: Env, jwt: string, now: Date): Promise<R
     planned = await fetchPlannedDispatches(env, jwt);
   } catch (error) {
     plannedFailed = true;
-    console.error("octo-mon plannedDispatches failed, using stored slots only:", error);
+    console.error("octo-mon plannedDispatches failed, using stored slots only:", String(error));
   }
   try {
     completed = await fetchCompletedDispatches(env, jwt);
   } catch (error) {
     completedFailed = true;
-    console.error("octo-mon completedDispatches failed, using stored slots only:", error);
+    console.error("octo-mon completedDispatches failed, using stored slots only:", String(error));
   }
   // One line per tick, so it's visible in the Worker's logs whether Kraken
   // is reporting dispatches at all and what it says caused them.
@@ -947,7 +947,7 @@ async function correctForDiscoveredSlots(
     try {
       points = await fetchTelemetry(env, jwt, runStart, runEnd);
     } catch (error) {
-      console.error("octo-mon: couldn't refetch telemetry for a dispatch slot, retrying next tick:", error);
+      console.error("octo-mon: couldn't refetch telemetry for a dispatch slot, retrying next tick:", String(error));
       break;
     }
 
@@ -1218,7 +1218,7 @@ export async function persistComputedStatus(env: Env, computed: ComputedStatus, 
   try {
     await notifyNewBonusSlots(env, computed.bonusSlots, now);
   } catch (error) {
-    console.error("octo-mon cheap-slot notification failed, retrying next tick:", error);
+    console.error("octo-mon cheap-slot notification failed, retrying next tick:", String(error));
   }
 }
 
@@ -1384,7 +1384,7 @@ export async function computeDailyHistory(
   } catch (error) {
     console.error(
       "octo-mon /history: Octopus consumption endpoint unavailable, falling back to accumulated hour-bucket data:",
-      error,
+      String(error),
     );
     return computeDailyHistoryFromHourBuckets(env, await loadHourBuckets(env), now);
   }

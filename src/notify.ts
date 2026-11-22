@@ -65,11 +65,45 @@ export function describeBonusSlots(slots: BonusSlot[], now: Date): string {
     .join("\n");
 }
 
+// ntfy.sh rate-limits by client IP, and Cloudflare Workers share egress IPs
+// with everyone else's Workers, so a push can be refused (HTTP 429) for
+// reasons that have nothing to do with this Worker. Smart-charge dispatches
+// are often announced only minutes before they start, so waiting for the
+// next cron tick can mean the slot is over before anyone hears about it —
+// retry a couple of times within the tick first.
+export const NTFY_RETRY_DELAYS_MS = [2_000, 5_000];
+
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+async function postToNtfy(topic: string, body: string): Promise<void> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= NTFY_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, NTFY_RETRY_DELAYS_MS[attempt - 1]));
+    try {
+      const response = await fetch(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
+        method: "POST",
+        headers: { Title: "Cheap electricity slot announced", Tags: "zap" },
+        body,
+      });
+      if (response.ok) return;
+      const detail = (await response.text().catch(() => "")).trim().slice(0, 200);
+      lastError = new Error(`ntfy notification failed: HTTP ${response.status}${detail ? ` ${detail}` : ""}`);
+      if (!isRetryableStatus(response.status)) break;
+    } catch (error) {
+      lastError = new Error(`ntfy notification failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw lastError ?? new Error("ntfy notification failed");
+}
+
 /**
  * Sends a push notification (via ntfy — see the README) for any bonus
  * off-peak slots not announced before. Does nothing unless NTFY_TOPIC is
  * set. A slot is only marked as announced once the push succeeds, so a
- * failed push is retried on the next tick.
+ * failed push is retried a couple of times straight away and then again on
+ * the next tick.
  */
 export async function notifyNewBonusSlots(env: Env, slots: BonusSlot[], now: Date): Promise<void> {
   if (!env.NTFY_TOPIC) return;
@@ -83,14 +117,7 @@ export async function notifyNewBonusSlots(env: Env, slots: BonusSlot[], now: Dat
   );
   if (fresh.length === 0) return;
 
-  const response = await fetch(`https://ntfy.sh/${encodeURIComponent(env.NTFY_TOPIC)}`, {
-    method: "POST",
-    headers: { Title: "Cheap electricity slot announced", Tags: "zap" },
-    body: describeBonusSlots(fresh, now),
-  });
-  if (!response.ok) {
-    throw new Error(`ntfy notification failed: HTTP ${response.status}`);
-  }
+  await postToNtfy(env.NTFY_TOPIC, describeBonusSlots(fresh, now));
 
   for (const slot of fresh) notified.add(slot.validFrom);
   const state: NotifiedState = { slots: [...notified].sort() };

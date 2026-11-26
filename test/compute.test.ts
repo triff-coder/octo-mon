@@ -2292,7 +2292,10 @@ describe("smart-charging dispatches priced at the off-peak rate", () => {
       }),
     );
 
-    const { bonusSlots } = await computeStatus(testEnv, null, null, null, now);
+    const { bonusSlots, dispatchPlan } = await computeStatus(testEnv, null, null, null, now);
+
+    expect(dispatchPlan?.nextCheapFrom).toBe("2026-01-20T18:00:00.000Z");
+    expect(dispatchPlan?.cheapSlotKeys.has("2026-01-21T01:30:00.000Z")).toBe(true);
 
     expect(bonusSlots).toEqual([
       { validFrom: "2026-01-20T18:00:00.000Z", validTo: "2026-01-20T18:30:00.000Z", pencePerKwh: 7, normalPencePerKwh: 28 },

@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { describeBonusSlots, notifyNewBonusSlots, NTFY_RETRY_DELAYS_MS } from "../src/notify";
+import { describeBonusSlots, describeCancelledSlots, notifyNewBonusSlots, NTFY_RETRY_DELAYS_MS } from "../src/notify";
 import type { BonusSlot } from "../src/notify";
 import type { Env } from "../src/types";
 
@@ -37,6 +37,79 @@ describe("describeBonusSlots", () => {
     expect(describeBonusSlots(slots, now)).toBe(
       "20:00–20:30 at 7.0p/kWh (normally 34.7p)\nTomorrow 14:00–14:30 at 7.0p/kWh (normally 34.7p)",
     );
+  });
+});
+
+describe("describeCancelledSlots", () => {
+  it("says what the rate is back to and when the next cheap slot starts", () => {
+    expect(
+      describeCancelledSlots(
+        ["2026-11-26T22:30:00.000Z"],
+        { "2026-11-26T22:30:00.000Z": 34.7 },
+        "2026-11-26T23:00:00.000Z",
+        new Date("2026-11-26T22:30:00Z"),
+      ),
+    ).toBe("22:30–23:00 no longer cheap, back to 34.7p/kWh\nNext cheap slot starts 23:00");
+  });
+
+  it("copes with slots announced before normal rates were remembered", () => {
+    expect(describeCancelledSlots(["2026-11-20T20:00:00.000Z", "2026-11-20T20:30:00.000Z"], {}, null, now)).toBe(
+      "20:00–21:00 no longer cheap",
+    );
+  });
+});
+
+describe("notifyNewBonusSlots cancellations", () => {
+  const s2230 = slot("2026-11-26T22:30:00.000Z", "2026-11-26T23:00:00.000Z");
+  const s2300 = slot("2026-11-26T23:00:00.000Z", "2026-11-26T23:30:00.000Z");
+  const plan = (keys: string[], nextCheapFrom: string | null = null) => ({ cheapSlotKeys: new Set(keys), nextCheapFrom });
+
+  it("says so when Octopus moves an announced dispatch later before it starts (26 Nov 22:30)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    // 21:30: dispatch planned from 22:30.
+    await notifyNewBonusSlots(testEnv, [s2230, s2300], new Date("2026-11-26T21:30:00Z"), plan([s2230.validFrom, s2300.validFrom]));
+    // 22:30: Kraken now plans it from 23:00 instead.
+    const at2230 = new Date("2026-11-26T22:30:20Z");
+    await notifyNewBonusSlots(testEnv, [s2300], at2230, plan([s2300.validFrom], s2300.validFrom));
+    // And nothing more on the next tick.
+    await notifyNewBonusSlots(testEnv, [s2300], new Date("2026-11-26T22:35:00Z"), plan([s2300.validFrom], s2300.validFrom));
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Title).toBe("Cheap electricity slot cancelled");
+    expect(init.body).toBe("22:30–23:00 no longer cheap, back to 34.7p/kWh\nNext cheap slot starts 23:00");
+  });
+
+  it("announces a cancelled slot again if Octopus puts it back", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await notifyNewBonusSlots(testEnv, [s2230], new Date("2026-11-26T21:30:00Z"), plan([s2230.validFrom]));
+    await notifyNewBonusSlots(testEnv, [], new Date("2026-11-26T21:35:00Z"), plan([]));
+    await notifyNewBonusSlots(testEnv, [s2230], new Date("2026-11-26T21:40:00Z"), plan([s2230.validFrom]));
+
+    expect(fetchMock.mock.calls.map((c) => (c as [string, RequestInit])[1].body)).toEqual([
+      "22:30–23:00 at 7.0p/kWh (normally 34.7p)",
+      "22:30–23:00 no longer cheap, back to 34.7p/kWh",
+      "22:30–23:00 at 7.0p/kWh (normally 34.7p)",
+    ]);
+  });
+
+  it("doesn't call a slot cancelled without a trustworthy plan, once it's over, or when Kraken still counts it cheap", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await notifyNewBonusSlots(testEnv, [s2230], new Date("2026-11-26T21:30:00Z"), plan([s2230.validFrom]));
+    // plannedDispatches failed this tick: no plan passed.
+    await notifyNewBonusSlots(testEnv, [], new Date("2026-11-26T21:35:00Z"));
+    // Still listed as cheap (e.g. moved to completed dispatches).
+    await notifyNewBonusSlots(testEnv, [], new Date("2026-11-26T22:45:00Z"), plan([s2230.validFrom]));
+    // Slot already finished.
+    await notifyNewBonusSlots(testEnv, [], new Date("2026-11-26T23:00:00Z"), plan([]));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

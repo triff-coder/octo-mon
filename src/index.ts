@@ -7,6 +7,7 @@ import {
   loadMonthAccumulator,
   loadTodayAccumulator,
   persistComputedStatus,
+  sendDispatchNotifications,
 } from "./compute";
 import { renderDashboardHtml } from "./dashboard";
 import type { Env } from "./types";
@@ -75,6 +76,7 @@ export default {
       const previousHourBuckets = await loadHourBuckets(env);
       const computed = await computeStatus(env, previousAccumulator, previousMonthAccumulator, previousHourBuckets, now);
       await persistComputedStatus(env, computed, now);
+      await sendDispatchNotifications(env, computed, now);
     } catch (error) {
       console.error("octo-mon cron tick failed:", String(error));
     }

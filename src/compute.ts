@@ -1,6 +1,6 @@
 import { getJson, putJson } from "./cache";
 import { notifyNewBonusSlots } from "./notify";
-import type { BonusSlot } from "./notify";
+import type { BonusSlot, DispatchPlanSnapshot } from "./notify";
 import { isOffPeakDispatch, overlayCheapSlots, SLOT_MS, slotKeysForDispatch } from "./dispatch";
 import {
   fetchCompletedDispatches,
@@ -829,6 +829,10 @@ interface ResolvedDispatchSlots {
   discovered: string[];
   /** Upcoming/in-progress off-peak dispatches, for nextAgileSlots. */
   plannedOffPeak: DispatchWindow[];
+  /** Every slot in an off-peak planned or completed dispatch this tick. */
+  reportedOffPeak: Set<string>;
+  /** Whether plannedDispatches answered, i.e. whether `plannedOffPeak` can be trusted to be complete. */
+  plannedFetched: boolean;
 }
 
 /**
@@ -867,13 +871,15 @@ async function resolveDispatchSlots(env: Env, jwt: string, now: Date): Promise<R
 
   const plannedOffPeak = planned.filter(isOffPeakDispatch);
   const discovered = new Set<string>();
+  const reportedOffPeak = new Set<string>();
   for (const dispatch of [...completed.filter(isOffPeakDispatch), ...plannedOffPeak]) {
     for (const key of slotKeysForDispatch(dispatch)) {
+      reportedOffPeak.add(key);
       if (!known.has(key) && new Date(key).getTime() >= cutoffMs) discovered.add(key);
     }
   }
 
-  return { known, discovered: [...discovered].sort(), plannedOffPeak };
+  return { known, discovered: [...discovered].sort(), plannedOffPeak, reportedOffPeak, plannedFetched: !plannedFailed };
 }
 
 interface PricedStates {
@@ -1007,6 +1013,8 @@ export interface ComputedStatus {
   correctedPastDayKeys: string[];
   /** Upcoming dispatch slots cheaper than they'd normally be, for push notifications. */
   bonusSlots: BonusSlot[];
+  /** What Kraken says is cheap, for spotting cancelled slots; null when plannedDispatches failed this tick. */
+  dispatchPlan: DispatchPlanSnapshot | null;
 }
 
 /**
@@ -1184,6 +1192,17 @@ export async function computeStatus(
     dispatchSlots: [...cheapSlots].filter((k) => new Date(k).getTime() <= now.getTime()).sort(),
     correctedPastDayKeys: [...correction.correctedDayKeys].filter((k) => k < todayKey).sort(),
     bonusSlots: await resolveBonusSlots(env, dispatchSlots.plannedOffPeak, now),
+    dispatchPlan: dispatchSlots.plannedFetched
+      ? {
+          cheapSlotKeys: new Set([...dispatchSlots.known, ...dispatchSlots.reportedOffPeak]),
+          nextCheapFrom:
+            dispatchSlots.plannedOffPeak
+              .map((d) => new Date(d.start).getTime())
+              .filter((ms) => ms > now.getTime())
+              .sort((a, b) => a - b)
+              .map((ms) => new Date(ms).toISOString())[0] ?? null,
+        }
+      : null,
   };
 }
 
@@ -1215,8 +1234,17 @@ export async function persistComputedStatus(env: Env, computed: ComputedStatus, 
     // dispatch was known about.
     await env.OCTOMON_KV.delete(DAILY_HISTORY_KV_KEY_PREFIX + londonDateKey(now));
   }
+}
+
+/**
+ * Sends cheap-slot push notifications (new and cancelled slots) for a
+ * computed status. Only the cron tick calls this, never an on-demand
+ * /status refresh: two runs at once would both send the same push (see
+ * notifyNewBonusSlots). A slot is still announced within one cron interval.
+ */
+export async function sendDispatchNotifications(env: Env, computed: ComputedStatus, now: Date): Promise<void> {
   try {
-    await notifyNewBonusSlots(env, computed.bonusSlots, now);
+    await notifyNewBonusSlots(env, computed.bonusSlots, now, computed.dispatchPlan ?? undefined);
   } catch (error) {
     console.error("octo-mon cheap-slot notification failed, retrying next tick:", String(error));
   }

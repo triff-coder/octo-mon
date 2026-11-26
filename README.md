@@ -261,6 +261,14 @@ aren't announced because they're cheap anyway, and neither are bump
 charges. Each slot is announced once, and an extended dispatch announces
 only its new slots.
 
+Octopus sometimes reschedules a dispatch at the last minute. If an
+announced slot drops out of the plan before it finishes, a second push
+says so, e.g. "22:30–23:00 no longer cheap, back to 34.7p/kWh / Next cheap
+slot starts 23:00". If Octopus's dispatch API fails on a check, no
+cancellation is assumed. Pushes are only sent from the 5-minute cron, never
+from a `/status` refresh, so the same slot isn't announced twice when the
+two happen at once.
+
 Notifications go through [ntfy](https://ntfy.sh), a free push service that
 needs no account:
 
